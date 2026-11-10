@@ -76,3 +76,9 @@ func (c *Client) fetchToken(ctx context.Context) (tokenEntry, error) {
 		expiresAt: c.now().Add(time.Duration(body.ExpiresIn)*time.Second - tokenMargin),
 	}, nil
 }
+
+// CheckAuth acquires (or reuses) the app token: the doctor's credential check.
+func (c *Client) CheckAuth(ctx context.Context) error {
+	_, err := c.token(ctx)
+	return err
+}

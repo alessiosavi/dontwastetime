@@ -5,16 +5,16 @@
 <p>Posta arrivata da {{.WindowFrom}} a {{.WindowTo}} sulle caselle seguite.</p>
 <h2 style="font-size:17px">Serve risposta ({{len .NeedsReply}})</h2>
 {{if .NeedsReply}}<ul>{{range .NeedsReply}}
-<li><b>[{{.Label}}]</b> {{.From}} — “{{.Subject}}” — in attesa da {{.Waiting}}{{if .Overdue}} <b>(oltre le {{.Threshold}})</b>{{end}} — {{.Mailbox}}</li>{{end}}
+<li><b>[{{.Label}}]</b> {{.From}} — “{{.Subject}}” — in attesa da {{.Waiting}}{{if .Overdue}} <b>(oltre le {{.Threshold}})</b>{{end}} — {{.Mailbox}} — #{{.ID}}</li>{{end}}
 </ul>{{else}}<p>Nessuna conversazione in attesa di risposta.</p>{{end}}
 <h2 style="font-size:17px">Per cassetto</h2>
 {{range .Sections}}<h3 style="font-size:15px">{{.Title}} ({{.Count}})</h3><ul>{{range .Items}}
-<li>{{.From}} — “{{.Subject}}” — {{.Age}} fa — {{.Mailbox}}{{if .Reason}} — <i>{{.Reason}}</i>{{end}}</li>{{end}}{{if .More}}
+<li>{{.From}} — “{{.Subject}}” — {{.Age}} fa — {{.Mailbox}} — #{{.ID}}{{if .Reason}} — <i>{{.Reason}}</i>{{end}}</li>{{end}}{{if .More}}
 <li>… e altre {{.More}}</li>{{end}}
 </ul>{{else}}<p>Nessuna nuova mail classificata.</p>{{end}}
 <h2 style="font-size:17px">Da classificare ({{len .Unsure}})</h2>
 {{if .Unsure}}<ul>{{range .Unsure}}
-<li>{{.From}} — “{{.Subject}}” — {{.Age}} fa — {{.Mailbox}}{{if .Reason}} — <i>{{.Reason}}</i>{{end}}</li>{{end}}
+<li>{{.From}} — “{{.Subject}}” — {{.Age}} fa — {{.Mailbox}} — #{{.ID}}{{if .Reason}} — <i>{{.Reason}}</i>{{end}}</li>{{end}}
 </ul>{{else}}<p>Niente da classificare a mano.</p>{{end}}
 <p><b>Notifiche:</b> {{.Notifications}} (solo conteggio)</p>
 <h2 style="font-size:17px">Stato del sistema</h2>

@@ -279,3 +279,16 @@ func TestAlert_P0Only(t *testing.T) {
 		t.Fatalf("non-P0 alert: err=%v sends=%d", err, mail.SentCount())
 	}
 }
+
+func TestBuild_LinesCarryMessageIDs(t *testing.T) {
+	f := seed(t)
+	d, err := Build(context.Background(), f.s, f.cfg, f.tx, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Message 1 is the unanswered P0 client mail; 2 is the business.dev arrival.
+	if !strings.Contains(d.Markdown, `"Rinnovo contratto 2027" — in attesa da 26 ore (oltre le 24h) — business@example.com — #1`) ||
+		!strings.Contains(d.Markdown, `"Proposta di collaborazione" — 3 ore fa — business@example.com — #2`) {
+		t.Fatalf("digest lines must carry the message id used by `dwt correct` / `dwt mute-thread`:\n%s", d.Markdown)
+	}
+}

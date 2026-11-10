@@ -4,7 +4,7 @@ Posta arrivata da {{.WindowFrom}} a {{.WindowTo}} sulle caselle seguite.
 
 ## Serve risposta ({{len .NeedsReply}})
 {{range .NeedsReply}}
-- [{{.Label}}] {{.From}} — "{{.Subject}}" — in attesa da {{.Waiting}}{{if .Overdue}} (oltre le {{.Threshold}}){{end}} — {{.Mailbox}}
+- [{{.Label}}] {{.From}} — "{{.Subject}}" — in attesa da {{.Waiting}}{{if .Overdue}} (oltre le {{.Threshold}}){{end}} — {{.Mailbox}} — #{{.ID}}
 {{- else}}
 Nessuna conversazione in attesa di risposta.
 {{- end}}
@@ -13,7 +13,7 @@ Nessuna conversazione in attesa di risposta.
 {{range .Sections}}
 ### {{.Title}} ({{.Count}})
 {{range .Items}}
-- {{.From}} — "{{.Subject}}" — {{.Age}} fa — {{.Mailbox}}{{if .Reason}} — _{{.Reason}}_{{end}}
+- {{.From}} — "{{.Subject}}" — {{.Age}} fa — {{.Mailbox}} — #{{.ID}}{{if .Reason}} — _{{.Reason}}_{{end}}
 {{- end}}
 {{- if .More}}
 - … e altre {{.More}}
@@ -23,7 +23,7 @@ Nessuna nuova mail classificata.
 {{end}}
 ## Da classificare ({{len .Unsure}})
 {{range .Unsure}}
-- {{.From}} — "{{.Subject}}" — {{.Age}} fa — {{.Mailbox}}{{if .Reason}} — _{{.Reason}}_{{end}}
+- {{.From}} — "{{.Subject}}" — {{.Age}} fa — {{.Mailbox}} — #{{.ID}}{{if .Reason}} — _{{.Reason}}_{{end}}
 {{- else}}
 Niente da classificare a mano.
 {{- end}}

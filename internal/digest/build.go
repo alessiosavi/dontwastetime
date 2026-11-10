@@ -55,7 +55,10 @@ type Degraded struct {
 	Reason  string `json:"reason"`
 }
 
-type item struct{ From, Subject, Mailbox, Age, Reason string }
+type item struct {
+	ID                                  int64
+	From, Subject, Mailbox, Age, Reason string
+}
 
 type section struct {
 	Title       string
@@ -64,6 +67,7 @@ type section struct {
 }
 
 type replyRow struct {
+	ID                            int64
 	Label, From, Subject, Mailbox string
 	Waiting, Threshold            string
 	Overdue                       bool
@@ -141,7 +145,7 @@ func Build(ctx context.Context, s *store.Store, cfg *config.Config, t *classify.
 		if !digestOn[r.Mailbox] || r.LastInboundAt == nil {
 			continue
 		}
-		row := replyRow{Label: t.Title(r.Cassetto), From: r.LastInboundFrom, Subject: r.Subject, Mailbox: r.Mailbox,
+		row := replyRow{ID: r.LastInboundMessageID, Label: t.Title(r.Cassetto), From: r.LastInboundFrom, Subject: r.Subject, Mailbox: r.Mailbox,
 			Waiting: age(at.Sub(*r.LastInboundAt))}
 		if r.Priority != "" {
 			row.Label = r.Priority + " · " + row.Label
@@ -202,7 +206,7 @@ func toItem(m store.DigestItem, at time.Time) item {
 	if m.FromName != "" {
 		from = m.FromName + " (" + m.From + ")"
 	}
-	return item{From: from, Subject: m.Subject, Mailbox: m.Mailbox, Age: age(at.Sub(m.ReceivedAt)),
+	return item{ID: m.ID, From: from, Subject: m.Subject, Mailbox: m.Mailbox, Age: age(at.Sub(m.ReceivedAt)),
 		Reason: stringutil.Truncate(m.Rationale, reasonLen, "…")}
 }
 
