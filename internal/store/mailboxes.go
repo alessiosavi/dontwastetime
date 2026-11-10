@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/alessiosavi/go-dontwastetime/internal/config"
@@ -134,6 +135,22 @@ func (s *Store) SetCursor(ctx context.Context, mailbox, folder string, t time.Ti
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
 		return fmt.Errorf("store: set cursor: unknown mailbox %s", mailbox)
+	}
+	return nil
+}
+
+// DisableMailboxesExcept disables every mailbox whose address is not in keep.
+func (s *Store) DisableMailboxesExcept(ctx context.Context, keep []string) error {
+	args := make([]any, len(keep))
+	for i, a := range keep {
+		args[i] = a
+	}
+	q := `UPDATE mailbox SET enabled = 0`
+	if len(keep) > 0 {
+		q += ` WHERE address NOT IN (` + strings.TrimSuffix(strings.Repeat("?,", len(keep)), ",") + `)`
+	}
+	if _, err := s.db.ExecContext(ctx, q, args...); err != nil {
+		return fmt.Errorf("store: disable mailboxes: %w", err)
 	}
 	return nil
 }
