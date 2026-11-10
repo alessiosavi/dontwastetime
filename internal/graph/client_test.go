@@ -137,7 +137,7 @@ func TestListMessages_Paginates(t *testing.T) {
 	if got := q.Get("$filter"); got != "receivedDateTime ge 2026-11-08T00:00:00Z" {
 		t.Errorf("$filter = %q", got)
 	}
-	if got := q.Get("$orderby"); got != "receivedDateTime desc" {
+	if got := q.Get("$orderby"); got != "receivedDateTime asc" {
 		t.Errorf("$orderby = %q", got)
 	}
 	if got := q.Get("$top"); got != "2" {

@@ -65,9 +65,11 @@ type wireMessage struct {
 	} `json:"body"`
 }
 
-// ListMessages reads one folder (inbox or sentitems) of one mailbox, newest
+// ListMessages reads one folder (inbox or sentitems) of one mailbox, oldest
 // first, for messages received at or after since. It follows @odata.nextLink
 // up to opts.MaxPages; hitting the cap calls opts.Truncated (never silent).
+// Oldest-first means a truncated read is a prefix of the window: the caller
+// can advance its cursor to the newest fetched message and lose nothing.
 func (c *Client) ListMessages(ctx context.Context, mailbox, folder string, since time.Time, opts ListOptions) ([]Message, error) {
 	if opts.Top <= 0 {
 		opts.Top = defaultTop
@@ -77,7 +79,7 @@ func (c *Client) ListMessages(ctx context.Context, mailbox, folder string, since
 	}
 	q := url.Values{}
 	q.Set("$filter", "receivedDateTime ge "+since.UTC().Format(time.RFC3339))
-	q.Set("$orderby", "receivedDateTime desc")
+	q.Set("$orderby", "receivedDateTime asc")
 	q.Set("$top", strconv.Itoa(opts.Top))
 	q.Set("$select", messageSelect)
 	next := c.baseURL + "/users/" + url.PathEscape(mailbox) + "/mailFolders/" + url.PathEscape(folder) + "/messages?" + q.Encode()
