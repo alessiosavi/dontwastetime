@@ -1,0 +1,10 @@
+# secrets and local config — never committed
+.env
+config.json
+# local state / build output
+bin/
+*.db
+*.db-wal
+*.db-shm
+# agent workspaces
+.worktrees/

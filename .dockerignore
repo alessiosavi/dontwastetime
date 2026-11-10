@@ -1,0 +1,4 @@
+.worktrees/
+.env
+config.json
+bin/
