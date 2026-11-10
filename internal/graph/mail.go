@@ -92,7 +92,7 @@ func (c *Client) ListMessages(ctx context.Context, mailbox, folder string, since
 			break
 		}
 		if !strings.HasPrefix(next, c.baseURL+"/") {
-			return nil, fmt.Errorf("graph: refusing nextLink outside %s", c.baseURL)
+			return nil, errForeignNextLink(c.baseURL)
 		}
 		var resp struct {
 			NextLink string        `json:"@odata.nextLink"`
@@ -154,4 +154,10 @@ func addresses(in []emailAddress) []string {
 func htmlToText(s string) string {
 	s = strings.NewReplacer("<br>", " ", "<br/>", " ", "<br />", " ", "</p>", " </p>", "</div>", " </div>").Replace(s)
 	return stringutil.NormalizeWhitespace(stringutil.StripHTMLEntities(stringutil.StripTags(s)))
+}
+
+// errForeignNextLink refuses to follow a nextLink off the Graph host: the
+// bearer token would be sent to it.
+func errForeignNextLink(base string) error {
+	return fmt.Errorf("graph: refusing nextLink outside %s", base)
 }
