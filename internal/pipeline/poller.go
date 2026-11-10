@@ -159,13 +159,20 @@ func ThreadKey(m graph.Message) string {
 	if m.ConversationID != "" {
 		return "c:" + m.ConversationID
 	}
-	subj, err := subjectNorm.Run(replyPrefix.ReplaceAllString(m.Subject, ""))
-	if err != nil {
-		subj = strings.ToLower(strings.TrimSpace(m.Subject))
-	}
+	subj := NormalizeSubject(m.Subject)
 	counterpart := m.From
 	if m.Folder == store.FolderSentItems && len(m.To) > 0 {
 		counterpart = m.To[0]
 	}
 	return "s:" + subj + "|" + strings.ToLower(counterpart)
+}
+
+// NormalizeSubject strips reply/forward prefixes and reduces a subject to
+// lower-case letters, digits and single spaces.
+func NormalizeSubject(subject string) string {
+	subj, err := subjectNorm.Run(replyPrefix.ReplaceAllString(subject, ""))
+	if err != nil {
+		return strings.ToLower(strings.TrimSpace(subject))
+	}
+	return subj
 }
