@@ -225,3 +225,37 @@ func (s *Store) PurgeBodies(ctx context.Context, before, now time.Time) (int64, 
 	})
 	return n, err
 }
+
+// ClaimUnclassified atomically leases up to limit unclassified messages
+// (oldest first) whose lease is free or expired, until now+lease.
+func (s *Store) ClaimUnclassified(ctx context.Context, limit int, lease time.Duration, now time.Time) ([]MessageRow, error) {
+	var out []MessageRow
+	err := s.WithTx(ctx, func(tx *sql.Tx) error {
+		rows, err := queryMessages(ctx, tx, `WHERE classified_at IS NULL AND (classify_lease IS NULL OR classify_lease < ?)
+			ORDER BY received_at, id LIMIT ?`, ts(now), limit)
+		if err != nil {
+			return err
+		}
+		for _, r := range rows {
+			if _, err := tx.ExecContext(ctx, `UPDATE message SET classify_lease = ? WHERE id = ?`, ts(now.Add(lease)), r.ID); err != nil {
+				return fmt.Errorf("store: lease message %d: %w", r.ID, err)
+			}
+		}
+		out = rows
+		return nil
+	})
+	return out, err
+}
+
+// ReleaseLease frees the classify lease of still-unclassified messages so
+// another job can claim them at once.
+func (s *Store) ReleaseLease(ctx context.Context, ids []int64) error {
+	return s.WithTx(ctx, func(tx *sql.Tx) error {
+		for _, id := range ids {
+			if _, err := tx.ExecContext(ctx, `UPDATE message SET classify_lease = NULL WHERE id = ? AND classified_at IS NULL`, id); err != nil {
+				return fmt.Errorf("store: release lease %d: %w", id, err)
+			}
+		}
+		return nil
+	})
+}

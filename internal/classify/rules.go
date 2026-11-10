@@ -169,3 +169,24 @@ func entity(subject string, atts []graph.Attachment) string {
 	}
 	return ""
 }
+
+// Flags derives the stored message flags from internet headers: auto
+// (auto-generated / auto-replied), bulk (Precedence bulk|junk|list) and
+// list (mailing-list headers).
+func Flags(headers []graph.Header) (auto, bulk, list bool) {
+	if v, ok := header(headers, "Auto-Submitted"); ok && !strings.EqualFold(v, "no") {
+		auto = true
+	}
+	if _, ok := header(headers, "X-Autoreply"); ok {
+		auto = true
+	}
+	switch v, _ := header(headers, "Precedence"); strings.ToLower(v) {
+	case "auto_reply":
+		auto = true
+	case "bulk", "junk", "list":
+		bulk = true
+	}
+	_, unsub := header(headers, "List-Unsubscribe")
+	_, listID := header(headers, "List-Id")
+	return auto, bulk, unsub || listID
+}

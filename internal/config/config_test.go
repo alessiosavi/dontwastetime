@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 const minimalJSON = `{
@@ -143,5 +144,12 @@ func TestLoadEnvFile_NoOverwrite(t *testing.T) {
 	}
 	if got := os.Getenv("DWT_TEST_FILL"); got != "from file" {
 		t.Errorf("unset var not filled (quotes trimmed): %q", got)
+	}
+}
+
+func TestDay_UsesRome(t *testing.T) {
+	// 23:30 UTC on Nov 10 is already Nov 11 in Rome (UTC+1).
+	if got := Day(time.Date(2026, 11, 10, 23, 30, 0, 0, time.UTC)); got != "2026-11-11" {
+		t.Fatalf("Day = %s", got)
 	}
 }
