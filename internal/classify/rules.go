@@ -88,24 +88,24 @@ func Rules(m graph.Message, headers []graph.Header, atts []graph.Attachment, t *
 
 	// Automatic replies, bounces, PEC receipts → notifications.
 	if v, ok := header(headers, "Auto-Submitted"); ok && !strings.EqualFold(v, "no") {
-		return rule("notifications", 0.95, "Auto-Submitted header")
+		return rule("notifications", 0.95, "intestazione Auto-Submitted")
 	}
 	if _, ok := header(headers, "X-Autoreply"); ok {
-		return rule("notifications", 0.95, "X-Autoreply header")
+		return rule("notifications", 0.95, "intestazione X-Autoreply")
 	}
 	if v, _ := header(headers, "Precedence"); strings.EqualFold(v, "auto_reply") {
-		return rule("notifications", 0.95, "Precedence: auto_reply")
+		return rule("notifications", 0.95, "risposta automatica (Precedence)")
 	}
 	if stringutil.HasAnyPrefix(local, bounceLocal...) {
-		return rule("notifications", 0.95, "bounce sender")
+		return rule("notifications", 0.95, "mittente di mancato recapito")
 	}
 	if hasWord(subj, pecWords) || hasWord(subj, oofWords) {
-		return rule("notifications", 0.9, "receipt / automatic-reply subject")
+		return rule("notifications", 0.9, "oggetto da ricevuta o risposta automatica")
 	}
 
 	// Invoices: a pdf/xml attachment plus invoice words.
 	if hasInvoiceAttachment(atts) && hasWord(subj, invoiceWords) {
-		r, _ := rule("admin.invoices", 0.9, "pdf/xml attachment + invoice subject")
+		r, _ := rule("admin.invoices", 0.9, "allegato pdf/xml e oggetto da fattura")
 		r.Entity = entity(m.Subject, atts)
 		return r, true
 	}
@@ -113,29 +113,29 @@ func Rules(m graph.Message, headers []graph.Header, atts []graph.Attachment, t *
 	// Tech notifications by sender domain.
 	for _, d := range techDomains {
 		if dom == d || strings.HasSuffix(dom, "."+d) {
-			return rule("tech.alerts", 0.9, "tech sender domain "+d)
+			return rule("tech.alerts", 0.9, "mittente tecnico "+d)
 		}
 	}
 
 	// Bulk / mailing lists → newsletter.
 	if _, ok := header(headers, "List-Unsubscribe"); ok {
-		return rule("marketing.news", 0.9, "List-Unsubscribe header")
+		return rule("marketing.news", 0.9, "newsletter (List-Unsubscribe)")
 	}
 	if _, ok := header(headers, "List-Id"); ok {
-		return rule("marketing.news", 0.9, "List-Id header")
+		return rule("marketing.news", 0.9, "mailing list (List-Id)")
 	}
 	if v, _ := header(headers, "Precedence"); strings.EqualFold(v, "bulk") || strings.EqualFold(v, "list") {
-		return rule("marketing.news", 0.85, "Precedence: "+v)
+		return rule("marketing.news", 0.85, "invio massivo (Precedence: "+v+")")
 	}
 
 	// No-reply sender with a receipt-ish subject → notifications.
 	if stringutil.HasAnyPrefix(local, noReplyLocal...) && hasWord(subj, receiptWords) {
-		return rule("notifications", 0.9, "no-reply sender + receipt subject")
+		return rule("notifications", 0.9, "mittente no-reply e oggetto da ricevuta")
 	}
 
 	// Accounting keywords from an external sender.
 	if dom != "" && dom != domainOf(m.Mailbox) && hasWord(subj, accountWords) {
-		return rule("accounting", 0.85, "accounting keyword from external sender")
+		return rule("accounting", 0.85, "parola chiave contabile da mittente esterno")
 	}
 	return Result{}, false
 }

@@ -235,3 +235,10 @@ func digestMailbox(cfg *config.Config, address string) bool {
 	}
 	return false
 }
+
+// Threshold is the reply threshold of a label; ok=false means the label
+// never expects a reply.
+func Threshold(label string) (time.Duration, bool) {
+	d, ok := thresholds[label]
+	return d, ok
+}

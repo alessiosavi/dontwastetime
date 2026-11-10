@@ -1,0 +1,38 @@
+# Riepilogo email — {{.DateLong}}
+
+Posta arrivata da {{.WindowFrom}} a {{.WindowTo}} sulle caselle seguite.
+
+## Serve risposta ({{len .NeedsReply}})
+{{range .NeedsReply}}
+- [{{.Label}}] {{.From}} — "{{.Subject}}" — in attesa da {{.Waiting}}{{if .Overdue}} (oltre le {{.Threshold}}){{end}} — {{.Mailbox}}
+{{- else}}
+Nessuna conversazione in attesa di risposta.
+{{- end}}
+
+## Per cassetto
+{{range .Sections}}
+### {{.Title}} ({{.Count}})
+{{range .Items}}
+- {{.From}} — "{{.Subject}}" — {{.Age}} fa — {{.Mailbox}}{{if .Reason}} — _{{.Reason}}_{{end}}
+{{- end}}
+{{- if .More}}
+- … e altre {{.More}}
+{{- end}}
+{{else}}
+Nessuna nuova mail classificata.
+{{end}}
+## Da classificare ({{len .Unsure}})
+{{range .Unsure}}
+- {{.From}} — "{{.Subject}}" — {{.Age}} fa — {{.Mailbox}}{{if .Reason}} — _{{.Reason}}_{{end}}
+{{- else}}
+Niente da classificare a mano.
+{{- end}}
+
+**Notifiche:** {{.Notifications}} (solo conteggio)
+
+## Stato del sistema
+
+- Caselle con problemi: {{if .Health.Degraded}}{{range $i, $d := .Health.Degraded}}{{if $i}}; {{end}}{{$d.Address}} ({{$d.Reason}}){{end}}{{else}}nessuna{{end}}
+- Coda: {{.Health.QueuePending}} in attesa{{if .Health.QueuePending}} (la più vecchia da {{.OldestMin}} min){{end}}, {{.Health.QueueFailed}} in errore definitivo
+- Mail in attesa di classificazione: {{.Health.Unclassified}}
+- Budget classificatore: {{.Health.TokensUsed}} / {{.Health.TokensLimit}} token ({{.BudgetPct}}%){{if .Health.BudgetReached}} — classificatore in pausa: budget giornaliero raggiunto{{end}}

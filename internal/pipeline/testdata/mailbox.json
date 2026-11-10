@@ -1,0 +1,1092 @@
+[
+ {
+  "mailbox": "business@example.com",
+  "folder": "inbox",
+  "id": "AAMk-001",
+  "internetMessageId": "<fx001@fixture.test>",
+  "conversationId": "conv-c1",
+  "subject": "Rinnovo contratto 2027 - urgente",
+  "from": "ceo@bigbrand.example",
+  "fromName": "CEO BigBrand",
+  "to": [
+   "business@example.com"
+  ],
+  "receivedAt": "2026-11-09T08:00:00Z",
+  "body": "Serve una risposta entro domani.",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "clienti",
+   "confidence": 0.9,
+   "urgent": true
+  }
+ },
+ {
+  "mailbox": "business@example.com",
+  "folder": "inbox",
+  "id": "AAMk-002",
+  "internetMessageId": "<fx002@fixture.test>",
+  "conversationId": "conv-c2",
+  "subject": "Richiesta preventivo stand",
+  "from": "buyer@acme.example",
+  "fromName": "",
+  "to": [
+   "business@example.com"
+  ],
+  "receivedAt": "2026-11-09T09:30:00Z",
+  "body": "Potete mandarci un preventivo?",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "clienti",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "business@example.com",
+  "folder": "inbox",
+  "id": "AAMk-003",
+  "internetMessageId": "<fx003@fixture.test>",
+  "conversationId": "conv-c3",
+  "subject": "Domanda su fattura",
+  "from": "admin@foo.example",
+  "fromName": "",
+  "to": [
+   "business@example.com"
+  ],
+  "receivedAt": "2026-11-08T07:00:00Z",
+  "body": "Avete ricevuto il pagamento?",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "clienti",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "business@example.com",
+  "folder": "inbox",
+  "id": "AAMk-004",
+  "internetMessageId": "<fx004@fixture.test>",
+  "conversationId": "conv-c4",
+  "subject": "Aggiornamento progetto",
+  "from": "pm@old.example",
+  "fromName": "",
+  "to": [
+   "business@example.com"
+  ],
+  "receivedAt": "2026-11-01T10:00:00Z",
+  "body": "Vi aggiorno sul progetto.",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "clienti",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "business@example.com",
+  "folder": "inbox",
+  "id": "AAMk-005",
+  "internetMessageId": "<fx005@fixture.test>",
+  "conversationId": "conv-b1",
+  "subject": "Proposta di partnership",
+  "from": "bd@prospect.example",
+  "fromName": "",
+  "to": [
+   "business@example.com"
+  ],
+  "receivedAt": "2026-11-09T10:00:00Z",
+  "body": "Possiamo sentirci?",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "business.dev",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "business@example.com",
+  "folder": "inbox",
+  "id": "AAMk-006",
+  "internetMessageId": "<fx006@fixture.test>",
+  "conversationId": "conv-b2",
+  "subject": "Incontro investitori",
+  "from": "partner@fund.example",
+  "fromName": "",
+  "to": [
+   "business@example.com"
+  ],
+  "receivedAt": "2026-11-08T15:00:00Z",
+  "body": "Quando siete disponibili?",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "business.dev",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "business@example.com",
+  "folder": "inbox",
+  "id": "AAMk-007",
+  "internetMessageId": "<fx007@fixture.test>",
+  "conversationId": "conv-007",
+  "subject": "Le novità di novembre",
+  "from": "news0@brand.example",
+  "fromName": "",
+  "to": [
+   "business@example.com"
+  ],
+  "receivedAt": "2026-11-09T10:15:00Z",
+  "body": "Le novità di novembre",
+  "headers": [
+   {
+    "name": "List-Unsubscribe",
+    "value": "<mailto:unsubscribe@news.example>"
+   }
+  ],
+  "attachments": [],
+  "llm": {
+   "label": "marketing.news",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "business@example.com",
+  "folder": "inbox",
+  "id": "AAMk-008",
+  "internetMessageId": "<fx008@fixture.test>",
+  "conversationId": "conv-008",
+  "subject": "Offerte della settimana",
+  "from": "news1@brand.example",
+  "fromName": "",
+  "to": [
+   "business@example.com"
+  ],
+  "receivedAt": "2026-11-09T11:15:00Z",
+  "body": "Offerte della settimana",
+  "headers": [
+   {
+    "name": "List-Unsubscribe",
+    "value": "<mailto:unsubscribe@news.example>"
+   }
+  ],
+  "attachments": [],
+  "llm": {
+   "label": "marketing.news",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "business@example.com",
+  "folder": "inbox",
+  "id": "AAMk-009",
+  "internetMessageId": "<fx009@fixture.test>",
+  "conversationId": "conv-009",
+  "subject": "Il nostro magazine",
+  "from": "news2@brand.example",
+  "fromName": "",
+  "to": [
+   "business@example.com"
+  ],
+  "receivedAt": "2026-11-09T12:15:00Z",
+  "body": "Il nostro magazine",
+  "headers": [
+   {
+    "name": "List-Unsubscribe",
+    "value": "<mailto:unsubscribe@news.example>"
+   }
+  ],
+  "attachments": [],
+  "llm": {
+   "label": "marketing.news",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "business@example.com",
+  "folder": "inbox",
+  "id": "AAMk-010",
+  "internetMessageId": "<fx010@fixture.test>",
+  "conversationId": "conv-010",
+  "subject": "Ricevuta del tuo ordine 1",
+  "from": "no-reply@shop.example",
+  "fromName": "",
+  "to": [
+   "business@example.com"
+  ],
+  "receivedAt": "2026-11-09T13:20:00Z",
+  "body": "Ricevuta del tuo ordine 1",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "notifications",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "business@example.com",
+  "folder": "inbox",
+  "id": "AAMk-011",
+  "internetMessageId": "<fx011@fixture.test>",
+  "conversationId": "conv-011",
+  "subject": "Ricevuta del tuo ordine 2",
+  "from": "no-reply@shop.example",
+  "fromName": "",
+  "to": [
+   "business@example.com"
+  ],
+  "receivedAt": "2026-11-09T14:20:00Z",
+  "body": "Ricevuta del tuo ordine 2",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "notifications",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "business@example.com",
+  "folder": "inbox",
+  "id": "AAMk-012",
+  "internetMessageId": "<fx012@fixture.test>",
+  "conversationId": "conv-012",
+  "subject": "Ricevuta del tuo ordine 3",
+  "from": "no-reply@shop.example",
+  "fromName": "",
+  "to": [
+   "business@example.com"
+  ],
+  "receivedAt": "2026-11-09T15:20:00Z",
+  "body": "Ricevuta del tuo ordine 3",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "notifications",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "business@example.com",
+  "folder": "inbox",
+  "id": "AAMk-013",
+  "internetMessageId": "<fx013@fixture.test>",
+  "conversationId": "conv-013",
+  "subject": "ACCETTAZIONE: Invio documenti",
+  "from": "posta-certificata@pec.example",
+  "fromName": "",
+  "to": [
+   "business@example.com"
+  ],
+  "receivedAt": "2026-11-09T09:05:00Z",
+  "body": "ACCETTAZIONE: Invio documenti",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "notifications",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "business@example.com",
+  "folder": "inbox",
+  "id": "AAMk-014",
+  "internetMessageId": "<fx014@fixture.test>",
+  "conversationId": "conv-014",
+  "subject": "Risposta automatica: Rinnovo",
+  "from": "assistente@client.example",
+  "fromName": "",
+  "to": [
+   "business@example.com"
+  ],
+  "receivedAt": "2026-11-09T08:10:00Z",
+  "body": "Risposta automatica: Rinnovo",
+  "headers": [
+   {
+    "name": "Auto-Submitted",
+    "value": "auto-replied"
+   }
+  ],
+  "attachments": [],
+  "llm": {
+   "label": "notifications",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "business@example.com",
+  "folder": "inbox",
+  "id": "AAMk-015",
+  "internetMessageId": "<fx015@fixture.test>",
+  "conversationId": "conv-015",
+  "subject": "Fattura n. 101 Example S.r.l.",
+  "from": "fatture@aruba.example",
+  "fromName": "",
+  "to": [
+   "business@example.com"
+  ],
+  "receivedAt": "2026-11-09T06:30:00Z",
+  "body": "Fattura n. 101 Example S.r.l.",
+  "headers": [],
+  "attachments": [
+   {
+    "name": "fattura_101.pdf",
+    "contentType": "application/pdf",
+    "size": 81234
+   }
+  ],
+  "llm": {
+   "label": "admin.invoices",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "business@example.com",
+  "folder": "inbox",
+  "id": "AAMk-016",
+  "internetMessageId": "<fx016@fixture.test>",
+  "conversationId": "conv-016",
+  "subject": "Fattura 2026/88",
+  "from": "billing@vendor.example",
+  "fromName": "",
+  "to": [
+   "business@example.com"
+  ],
+  "receivedAt": "2026-11-09T06:40:00Z",
+  "body": "Fattura 2026/88",
+  "headers": [],
+  "attachments": [
+   {
+    "name": "IT0123_88.xml",
+    "contentType": "text/xml",
+    "size": 4321
+   }
+  ],
+  "llm": {
+   "label": "admin.invoices",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "business@example.com",
+  "folder": "inbox",
+  "id": "AAMk-017",
+  "internetMessageId": "<fx017@fixture.test>",
+  "conversationId": "conv-017",
+  "subject": "F24 da pagare entro il 16",
+  "from": "studio@commercialista.example",
+  "fromName": "",
+  "to": [
+   "business@example.com"
+  ],
+  "receivedAt": "2026-11-09T11:00:00Z",
+  "body": "F24 da pagare entro il 16",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "accounting",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "business@example.com",
+  "folder": "inbox",
+  "id": "AAMk-018",
+  "internetMessageId": "<fx018@fixture.test>",
+  "conversationId": "conv-018",
+  "subject": "Registro IVA ottobre",
+  "from": "studio@commercialista.example",
+  "fromName": "",
+  "to": [
+   "business@example.com"
+  ],
+  "receivedAt": "2026-11-09T11:05:00Z",
+  "body": "Registro IVA ottobre",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "accounting",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "business@example.com",
+  "folder": "inbox",
+  "id": "AAMk-019",
+  "internetMessageId": "<fx019@fixture.test>",
+  "conversationId": "conv-o1",
+  "subject": "Disponibilità sala riunioni",
+  "from": "manager@office.example",
+  "fromName": "",
+  "to": [
+   "business@example.com"
+  ],
+  "receivedAt": "2026-11-08T06:00:00Z",
+  "body": "C'è una sala libera giovedì?",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "ops.spaces",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "business@example.com",
+  "folder": "inbox",
+  "id": "AAMk-020",
+  "internetMessageId": "<fx020@fixture.test>",
+  "conversationId": "conv-e1",
+  "subject": "Vorremmo ospitare un evento",
+  "from": "eventi@terzi.example",
+  "fromName": "",
+  "to": [
+   "business@example.com"
+  ],
+  "receivedAt": "2026-11-09T12:00:00Z",
+  "body": "Avete spazi a dicembre?",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "eventi.external",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "business@example.com",
+  "folder": "inbox",
+  "id": "AAMk-021",
+  "internetMessageId": "<fx021@fixture.test>",
+  "conversationId": "conv-021",
+  "subject": "Candidatura sviluppatore",
+  "from": "candidato@mail.example",
+  "fromName": "",
+  "to": [
+   "business@example.com"
+  ],
+  "receivedAt": "2026-11-09T13:00:00Z",
+  "body": "Candidatura sviluppatore",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "hr.recruiting",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "business@example.com",
+  "folder": "inbox",
+  "id": "AAMk-022",
+  "internetMessageId": "<fx022@fixture.test>",
+  "conversationId": "conv-022",
+  "subject": "Cena di famiglia",
+  "from": "mamma@family.example",
+  "fromName": "",
+  "to": [
+   "business@example.com"
+  ],
+  "receivedAt": "2026-11-09T19:00:00Z",
+  "body": "Cena di famiglia",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "personal",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "business@example.com",
+  "folder": "inbox",
+  "id": "AAMk-023",
+  "internetMessageId": "<fx023@fixture.test>",
+  "conversationId": "conv-023",
+  "subject": "Re: quella cosa",
+  "from": "x@strano.example",
+  "fromName": "",
+  "to": [
+   "business@example.com"
+  ],
+  "receivedAt": "2026-11-09T17:00:00Z",
+  "body": "Re: quella cosa",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "clienti",
+   "confidence": 0.4
+  }
+ },
+ {
+  "mailbox": "business@example.com",
+  "folder": "inbox",
+  "id": "AAMk-024",
+  "internetMessageId": "<fx024@fixture.test>",
+  "conversationId": "conv-a1",
+  "subject": "Richiesta dati aziendali per bando",
+  "from": "bandi@partner.example",
+  "fromName": "",
+  "to": [
+   "business@example.com"
+  ],
+  "receivedAt": "2026-11-08T05:00:00Z",
+  "body": "Ci servono visura e bilancio.",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "admin.requests",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "business@example.com",
+  "folder": "inbox",
+  "id": "AAMk-025",
+  "internetMessageId": "<fx025@fixture.test>",
+  "conversationId": "conv-025",
+  "subject": "Grazie per l'evento",
+  "from": "ospite@terzi.example",
+  "fromName": "",
+  "to": [
+   "business@example.com"
+  ],
+  "receivedAt": "2026-11-09T15:00:00Z",
+  "body": "Grazie per l'evento",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "eventi.post",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "business@example.com",
+  "folder": "inbox",
+  "id": "AAMk-026",
+  "internetMessageId": "<fx026@fixture.test>",
+  "conversationId": "conv-026",
+  "subject": "Polizza assicurativa 2027",
+  "from": "agenzia@assicura.example",
+  "fromName": "",
+  "to": [
+   "business@example.com"
+  ],
+  "receivedAt": "2026-11-09T09:45:00Z",
+  "body": "Polizza assicurativa 2027",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "admin.docs",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "business@example.com",
+  "folder": "inbox",
+  "id": "AAMk-027",
+  "internetMessageId": "<fx027@fixture.test>",
+  "conversationId": "conv-027",
+  "subject": "Nota spese da approvare",
+  "from": "noreply@expenseprovider.example",
+  "fromName": "",
+  "to": [
+   "business@example.com"
+  ],
+  "receivedAt": "2026-11-09T10:30:00Z",
+  "body": "Nota spese da approvare",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "personale.expenses",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "business@example.com",
+  "folder": "inbox",
+  "id": "AAMk-028",
+  "internetMessageId": "<fx028@fixture.test>",
+  "conversationId": "conv-c5",
+  "subject": "Logistica consegna",
+  "from": "ceo@bigbrand.example",
+  "fromName": "CEO BigBrand",
+  "to": [
+   "business@example.com"
+  ],
+  "receivedAt": "2026-11-09T07:00:00Z",
+  "body": "Dove consegniamo?",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "clienti",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "business@example.com",
+  "folder": "inbox",
+  "id": "AAMk-029",
+  "internetMessageId": "<fx029@fixture.test>",
+  "conversationId": "conv-c5",
+  "subject": "Re: Logistica consegna",
+  "from": "person.two@example.com",
+  "fromName": "",
+  "to": [
+   "business@example.com"
+  ],
+  "receivedAt": "2026-11-09T08:00:00Z",
+  "body": "Ci pensiamo noi.",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "clienti",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "business@example.com",
+  "folder": "sentitems",
+  "id": "AAMk-030",
+  "internetMessageId": "<fx030@fixture.test>",
+  "conversationId": "conv-c2",
+  "subject": "Re: Richiesta preventivo stand",
+  "from": "business@example.com",
+  "fromName": "",
+  "to": [
+   "buyer@acme.example"
+  ],
+  "receivedAt": "2026-11-09T11:00:00Z",
+  "body": "Eccolo in allegato.",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "clienti",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "business@example.com",
+  "folder": "sentitems",
+  "id": "AAMk-031",
+  "internetMessageId": "<fx031@fixture.test>",
+  "conversationId": "conv-c6",
+  "subject": "Offerta inviata",
+  "from": "business@example.com",
+  "fromName": "",
+  "to": [
+   "new@lead.example"
+  ],
+  "receivedAt": "2026-11-09T16:00:00Z",
+  "body": "In allegato l'offerta.",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "clienti",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "tech@example.com",
+  "folder": "inbox",
+  "id": "AAMk-032",
+  "internetMessageId": "<fx032@fixture.test>",
+  "conversationId": "conv-032",
+  "subject": "[example/app] CI run 1 failed",
+  "from": "notifications@github.com",
+  "fromName": "",
+  "to": [
+   "tech@example.com"
+  ],
+  "receivedAt": "2026-11-09T01:00:00Z",
+  "body": "[example/app] CI run 1 failed",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "tech.alerts",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "tech@example.com",
+  "folder": "inbox",
+  "id": "AAMk-033",
+  "internetMessageId": "<fx033@fixture.test>",
+  "conversationId": "conv-033",
+  "subject": "[example/app] CI run 2 failed",
+  "from": "notifications@github.com",
+  "fromName": "",
+  "to": [
+   "tech@example.com"
+  ],
+  "receivedAt": "2026-11-09T02:00:00Z",
+  "body": "[example/app] CI run 2 failed",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "tech.alerts",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "tech@example.com",
+  "folder": "inbox",
+  "id": "AAMk-034",
+  "internetMessageId": "<fx034@fixture.test>",
+  "conversationId": "conv-034",
+  "subject": "[example/app] CI run 3 failed",
+  "from": "notifications@github.com",
+  "fromName": "",
+  "to": [
+   "tech@example.com"
+  ],
+  "receivedAt": "2026-11-09T03:00:00Z",
+  "body": "[example/app] CI run 3 failed",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "tech.alerts",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "tech@example.com",
+  "folder": "inbox",
+  "id": "AAMk-035",
+  "internetMessageId": "<fx035@fixture.test>",
+  "conversationId": "conv-035",
+  "subject": "[example/app] CI run 4 failed",
+  "from": "notifications@github.com",
+  "fromName": "",
+  "to": [
+   "tech@example.com"
+  ],
+  "receivedAt": "2026-11-09T04:00:00Z",
+  "body": "[example/app] CI run 4 failed",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "tech.alerts",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "tech@example.com",
+  "folder": "inbox",
+  "id": "AAMk-036",
+  "internetMessageId": "<fx036@fixture.test>",
+  "conversationId": "conv-036",
+  "subject": "[example/app] CI run 5 failed",
+  "from": "notifications@github.com",
+  "fromName": "",
+  "to": [
+   "tech@example.com"
+  ],
+  "receivedAt": "2026-11-09T05:00:00Z",
+  "body": "[example/app] CI run 5 failed",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "tech.alerts",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "tech@example.com",
+  "folder": "inbox",
+  "id": "AAMk-037",
+  "internetMessageId": "<fx037@fixture.test>",
+  "conversationId": "conv-037",
+  "subject": "Sentry alert: error spike 1",
+  "from": "alerts@sentry.io",
+  "fromName": "",
+  "to": [
+   "tech@example.com"
+  ],
+  "receivedAt": "2026-11-09T20:00:00Z",
+  "body": "Sentry alert: error spike 1",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "tech.alerts",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "tech@example.com",
+  "folder": "inbox",
+  "id": "AAMk-038",
+  "internetMessageId": "<fx038@fixture.test>",
+  "conversationId": "conv-038",
+  "subject": "Sentry alert: error spike 2",
+  "from": "alerts@sentry.io",
+  "fromName": "",
+  "to": [
+   "tech@example.com"
+  ],
+  "receivedAt": "2026-11-09T21:00:00Z",
+  "body": "Sentry alert: error spike 2",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "tech.alerts",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "tech@example.com",
+  "folder": "inbox",
+  "id": "AAMk-039",
+  "internetMessageId": "<fx039@fixture.test>",
+  "conversationId": "conv-039",
+  "subject": "Deployment ready",
+  "from": "notifications@vercel.com",
+  "fromName": "",
+  "to": [
+   "tech@example.com"
+  ],
+  "receivedAt": "2026-11-09T18:00:00Z",
+  "body": "Deployment ready",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "tech.alerts",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "tech@example.com",
+  "folder": "inbox",
+  "id": "AAMk-040",
+  "internetMessageId": "<fx040@fixture.test>",
+  "conversationId": "conv-040",
+  "subject": "Weekly Go news",
+  "from": "go@weekly.example",
+  "fromName": "",
+  "to": [
+   "tech@example.com"
+  ],
+  "receivedAt": "2026-11-09T12:30:00Z",
+  "body": "Weekly Go news",
+  "headers": [
+   {
+    "name": "List-Id",
+    "value": "<go.weekly.example>"
+   }
+  ],
+  "attachments": [],
+  "llm": {
+   "label": "marketing.news",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "tech@example.com",
+  "folder": "inbox",
+  "id": "AAMk-041",
+  "internetMessageId": "<fx041@fixture.test>",
+  "conversationId": "conv-c7",
+  "subject": "Problema bloccante in produzione",
+  "from": "cto@bigbrand.example",
+  "fromName": "CTO BigBrand",
+  "to": [
+   "tech@example.com"
+  ],
+  "receivedAt": "2026-11-10T06:30:00Z",
+  "body": "Il servizio è fermo.",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "clienti",
+   "confidence": 0.9,
+   "negative": true
+  }
+ },
+ {
+  "mailbox": "employee.example@example.com",
+  "folder": "inbox",
+  "id": "AAMk-042",
+  "internetMessageId": "<fx042@fixture.test>",
+  "conversationId": "conv-x1",
+  "subject": "URGENTE: richiesta",
+  "from": "ceo@bigbrand.example",
+  "fromName": "",
+  "to": [
+   "employee.example@example.com"
+  ],
+  "receivedAt": "2026-11-09T09:00:00Z",
+  "body": "Rispondete subito.",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "clienti",
+   "confidence": 0.9,
+   "urgent": true
+  }
+ },
+ {
+  "mailbox": "employee.example@example.com",
+  "folder": "inbox",
+  "id": "AAMk-043",
+  "internetMessageId": "<fx043@fixture.test>",
+  "conversationId": "conv-043",
+  "subject": "Pranzo domenica",
+  "from": "amico@friends.example",
+  "fromName": "",
+  "to": [
+   "employee.example@example.com"
+  ],
+  "receivedAt": "2026-11-09T12:00:00Z",
+  "body": "Pranzo domenica",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "personal",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "business@example.com",
+  "folder": "inbox",
+  "id": "AAMk-044",
+  "internetMessageId": "<fx044@fixture.test>",
+  "conversationId": "conv-044",
+  "subject": "Webinar novembre",
+  "from": "pr0@partner.example",
+  "fromName": "",
+  "to": [
+   "business@example.com"
+  ],
+  "receivedAt": "2026-11-09T14:05:00Z",
+  "body": "Webinar novembre",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "marketing.news",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "business@example.com",
+  "folder": "inbox",
+  "id": "AAMk-045",
+  "internetMessageId": "<fx045@fixture.test>",
+  "conversationId": "conv-045",
+  "subject": "Comunicato stampa partner",
+  "from": "pr1@partner.example",
+  "fromName": "",
+  "to": [
+   "business@example.com"
+  ],
+  "receivedAt": "2026-11-09T14:15:00Z",
+  "body": "Comunicato stampa partner",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "marketing.news",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "business@example.com",
+  "folder": "inbox",
+  "id": "AAMk-046",
+  "internetMessageId": "<fx046@fixture.test>",
+  "conversationId": "conv-046",
+  "subject": "Invito evento partner",
+  "from": "pr2@partner.example",
+  "fromName": "",
+  "to": [
+   "business@example.com"
+  ],
+  "receivedAt": "2026-11-09T14:25:00Z",
+  "body": "Invito evento partner",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "marketing.news",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "business@example.com",
+  "folder": "inbox",
+  "id": "AAMk-047",
+  "internetMessageId": "<fx047@fixture.test>",
+  "conversationId": "conv-047",
+  "subject": "Undeliverable: Offerta inviata",
+  "from": "mailer-daemon@example.com",
+  "fromName": "",
+  "to": [
+   "business@example.com"
+  ],
+  "receivedAt": "2026-11-09T16:01:00Z",
+  "body": "Undeliverable: Offerta inviata",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "notifications",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "business@example.com",
+  "folder": "inbox",
+  "id": "AAMk-048",
+  "internetMessageId": "<fx048@fixture.test>",
+  "conversationId": "conv-048",
+  "subject": "Profili selezionati per voi",
+  "from": "hr@agenzia.example",
+  "fromName": "",
+  "to": [
+   "business@example.com"
+  ],
+  "receivedAt": "2026-11-09T16:30:00Z",
+  "body": "Profili selezionati per voi",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "hr.recruiting",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "business@example.com",
+  "folder": "inbox",
+  "id": "AAMk-049",
+  "internetMessageId": "<fx049@fixture.test>",
+  "conversationId": "conv-c2",
+  "subject": "Grazie per la call",
+  "from": "buyer@acme.example",
+  "fromName": "",
+  "to": [
+   "business@example.com"
+  ],
+  "receivedAt": "2026-11-09T14:00:00Z",
+  "body": "Grazie, a presto.",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "clienti",
+   "confidence": 0.9
+  }
+ },
+ {
+  "mailbox": "business@example.com",
+  "folder": "inbox",
+  "id": "AAMk-050",
+  "internetMessageId": "<fx050@fixture.test>",
+  "conversationId": "conv-050",
+  "subject": "Info",
+  "from": "y@random.example",
+  "fromName": "",
+  "to": [
+   "business@example.com"
+  ],
+  "receivedAt": "2026-11-09T18:30:00Z",
+  "body": "Info",
+  "headers": [],
+  "attachments": [],
+  "llm": {
+   "label": "business.dev",
+   "confidence": 0.5
+  }
+ }
+]

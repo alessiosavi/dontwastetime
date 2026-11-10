@@ -194,15 +194,22 @@ func (l *LLM) Classify(ctx context.Context, batch []Item, t *Taxonomy, examples 
 		}
 		switch {
 		case !ok:
-			r.Label, r.Rationale = Unsure, "no answer for this message"
+			r.Label, r.Rationale = Unsure, "nessuna risposta dal classificatore"
 		case !t.Has(a.Label):
-			r.Label, r.Rationale = Unsure, fmt.Sprintf("unknown label %q: %s", a.Label, a.Reason)
+			r.Label, r.Rationale = Unsure, withReason(fmt.Sprintf("etichetta sconosciuta %q", a.Label), a.Reason)
 		case a.Confidence < l.cfg.ConfidenceThreshold:
-			r.Label, r.Rationale = Unsure, fmt.Sprintf("low confidence %.2f for %s: %s", a.Confidence, a.Label, a.Reason)
+			r.Label, r.Rationale = Unsure, withReason(fmt.Sprintf("confidenza bassa (%.2f) per %s", a.Confidence, a.Label), a.Reason)
 		}
 		res[i] = r
 	}
 	return res, total, nil
+}
+
+func withReason(head, reason string) string {
+	if reason = strings.TrimSpace(reason); reason != "" {
+		return head + ": " + reason
+	}
+	return head
 }
 
 // parseAnswers accepts {"results":[...]}, a bare array, or either wrapped in
@@ -258,6 +265,6 @@ func systemPrompt(t *Taxonomy, examples []store.Correction) string {
 			fmt.Fprintf(&b, "- from %s, subject %q → %s\n", e.From, e.Subject, e.NewLabel)
 		}
 	}
-	b.WriteString(`Answer with JSON only: {"results":[{"id":<id>,"label":"<label>","confidence":<0..1>,"entity":"","urgent":false,"negative":false,"reason":"<short>"}]} with one result per input message.`)
+	b.WriteString(`Answer with JSON only: {"results":[{"id":<id>,"label":"<label>","confidence":<0..1>,"entity":"","urgent":false,"negative":false,"reason":"<short, in Italian>"}]} with one result per input message.`)
 	return b.String()
 }

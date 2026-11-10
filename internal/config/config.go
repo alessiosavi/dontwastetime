@@ -214,14 +214,8 @@ func (c *Config) validate() error {
 	if err := validList("alert_recipients", c.AlertRecipients); err != nil {
 		return err
 	}
-	if c.DigestSender == "" {
-		return errors.New("config: digest_sender: required")
-	}
-	if !ValidAddress(c.DigestSender) {
-		return fmt.Errorf("config: digest_sender: invalid address %q", c.DigestSender)
-	}
-	if bannedSenders[strings.ToLower(c.DigestSender)] {
-		return fmt.Errorf("config: digest_sender: %q is a banned sender", c.DigestSender)
+	if err := CheckSender(c.DigestSender); err != nil {
+		return err
 	}
 	if c.PollSeconds < MinPollSeconds || c.PollSeconds > MaxPollSeconds {
 		return fmt.Errorf("config: poll_seconds %d outside %d..%d", c.PollSeconds, MinPollSeconds, MaxPollSeconds)
@@ -243,6 +237,20 @@ func validList(field string, addrs []string) error {
 		if !ValidAddress(a) {
 			return fmt.Errorf("config: %s: invalid address %q", field, a)
 		}
+	}
+	return nil
+}
+
+// CheckSender validates the digest/alert sender: required, a bare address,
+// and not banned. Send paths call it again right before any network call.
+func CheckSender(addr string) error {
+	switch {
+	case addr == "":
+		return errors.New("config: digest_sender: required")
+	case !ValidAddress(addr):
+		return fmt.Errorf("config: digest_sender: invalid address %q", addr)
+	case bannedSenders[strings.ToLower(addr)]:
+		return fmt.Errorf("config: digest_sender: %q is a banned sender", addr)
 	}
 	return nil
 }
