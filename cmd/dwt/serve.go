@@ -35,18 +35,18 @@ func (a *app) handlers(dryRun bool) map[string]pipeline.Handler {
 		pipeline.KindClassify:      pipeline.ClassifyHandler(a.s, a.c, a.llm, a.tx, a.cfg, a.now),
 		pipeline.KindThreadRefresh: threads.RefreshHandler(a.s, a.cfg, a.alerter(dryRun), a.now),
 		pipeline.KindDigest: func(ctx context.Context, j *store.Job) error {
-			return a.runDigest(ctx, time.Unix(j.Ref, 0), dryRun, a.alerter(dryRun))
+			return a.runDigest(ctx, time.Unix(j.Ref, 0), dryRun, a.alerter(dryRun), digest.Options{})
 		},
 	}
 }
 
 // runDigest refreshes thread states, builds the digest for instant at and
 // sends (or, dryRun, saves) it.
-func (a *app) runDigest(ctx context.Context, at time.Time, dryRun bool, alert threads.Alerter) error {
+func (a *app) runDigest(ctx context.Context, at time.Time, dryRun bool, alert threads.Alerter, opts digest.Options) error {
 	if err := threads.Sweep(ctx, a.s, a.cfg, alert, a.now()); err != nil {
 		logger().Warn("thread sweep before digest had errors", "err", err)
 	}
-	d, err := digest.Build(ctx, a.s, a.cfg, a.tx, at)
+	d, err := digest.BuildWithOptions(ctx, a.s, a.cfg, a.tx, at, opts)
 	if err != nil {
 		return err
 	}

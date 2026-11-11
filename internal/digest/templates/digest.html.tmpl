@@ -1,7 +1,8 @@
 <!doctype html>
 <html lang="it"><head><meta charset="utf-8"><title>Riepilogo email — {{.DateLong}}</title></head>
 <body style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:14px;color:#1f2328;max-width:760px">
-<h1 style="font-size:20px">Riepilogo email — {{.DateLong}}</h1>
+<h1 style="font-size:20px">Riepilogo email — {{.DateLong}}</h1>{{if .Period}}
+<p>{{.Period}}</p>{{end}}
 <p>Posta arrivata da {{.WindowFrom}} a {{.WindowTo}} sulle caselle seguite.</p>
 <h2 style="font-size:17px">Serve risposta ({{len .NeedsReply}})</h2>
 {{if .NeedsReply}}<ul>{{range .NeedsReply}}

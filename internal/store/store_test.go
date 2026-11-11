@@ -69,7 +69,7 @@ func TestOpen_Pragmas(t *testing.T) {
 	_ = s.DB().QueryRow(`PRAGMA journal_mode`).Scan(&mode)
 	_ = s.DB().QueryRow(`PRAGMA foreign_keys`).Scan(&fk)
 	_ = s.DB().QueryRow(`PRAGMA busy_timeout`).Scan(&busy)
-	if mode != "wal" || fk != 1 || busy != 5000 {
+	if mode != "wal" || fk != 1 || busy != 15000 {
 		t.Fatalf("journal_mode=%s foreign_keys=%d busy_timeout=%d", mode, fk, busy)
 	}
 }

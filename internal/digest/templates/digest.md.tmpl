@@ -1,4 +1,6 @@
-# Riepilogo email — {{.DateLong}}
+# Riepilogo email — {{.DateLong}}{{if .Period}}
+
+{{.Period}}{{end}}
 
 Posta arrivata da {{.WindowFrom}} a {{.WindowTo}} sulle caselle seguite.
 

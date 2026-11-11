@@ -88,7 +88,7 @@ func TestDigest_TodayHasNoSideEffects(t *testing.T) {
 	}
 	before := digestSnapshot(t, f)
 	for _, date := range []string{"", "2026-11-11"} {
-		r, err := f.svc.Digest(ctx, date)
+		r, err := f.svc.Digest(ctx, date, "")
 		if err != nil || !r.Built || !strings.Contains(r.Markdown, "Riepilogo email") {
 			t.Fatalf("digest=%+v err=%v", r, err)
 		}
@@ -110,7 +110,7 @@ func TestDigest_PastDateReadsSavedFileOrNotFound(t *testing.T) {
 	f := setup(t)
 	f.cfg.StateDir = t.TempDir()
 	ctx := context.Background()
-	if _, err := f.svc.Digest(ctx, "2026-11-10"); !errors.Is(err, ErrNotFound) {
+	if _, err := f.svc.Digest(ctx, "2026-11-10", ""); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("missing digest=%v", err)
 	}
 	dir := filepath.Join(f.cfg.StateDir, "digests")
@@ -122,12 +122,12 @@ func TestDigest_PastDateReadsSavedFileOrNotFound(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := digestSnapshot(t, f)
-	r, err := f.svc.Digest(ctx, "2026-11-10")
+	r, err := f.svc.Digest(ctx, "2026-11-10", "")
 	if err != nil || r.Built || r.Markdown != saved {
 		t.Fatalf("saved digest=%+v err=%v", r, err)
 	}
 	for _, date := range []string{"../2026-11-10", "2026-02-30", "2026-11-12", "2026-11-10T00:00:00Z"} {
-		if _, err := f.svc.Digest(ctx, date); !errors.Is(err, ErrInvalid) {
+		if _, err := f.svc.Digest(ctx, date, ""); !errors.Is(err, ErrInvalid) {
 			t.Errorf("date=%q error=%v, want ErrInvalid", date, err)
 		}
 	}
@@ -159,7 +159,7 @@ func TestDigest_TodayMatchesDeliveryBuilder(t *testing.T) {
 		t.Fatal("fixture must produce delivery mail below the Markdown cap")
 	}
 	for _, date := range []string{"", draft.Day} {
-		r, err := f.svc.Digest(ctx, date)
+		r, err := f.svc.Digest(ctx, date, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -180,7 +180,7 @@ func TestDigest_BoundsMarkdown(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "2026-11-10.md"), []byte(strings.Repeat("è", pageChars+1)), 0600); err != nil {
 		t.Fatal(err)
 	}
-	r, err := f.svc.Digest(context.Background(), "2026-11-10")
+	r, err := f.svc.Digest(context.Background(), "2026-11-10", "")
 	if err != nil || len([]rune(r.Markdown)) != pageChars || !r.Trimmed {
 		t.Fatalf("saved digest characters=%d err=%v, want at most %d", len([]rune(r.Markdown)), err, pageChars)
 	}
@@ -189,7 +189,7 @@ func TestDigest_BoundsMarkdown(t *testing.T) {
 	if _, err := f.db.DB().Exec(`UPDATE message SET subject=? WHERE id=?`, strings.Repeat("è", pageChars+1), id); err != nil {
 		t.Fatal(err)
 	}
-	r, err = f.svc.Digest(context.Background(), "")
+	r, err = f.svc.Digest(context.Background(), "", "")
 	if err != nil || len([]rune(r.Markdown)) != pageChars || !r.Trimmed {
 		t.Fatalf("today's digest characters=%d err=%v, want at most %d", len([]rune(r.Markdown)), err, pageChars)
 	}

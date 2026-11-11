@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/alessiosavi/go-dontwastetime/internal/config"
+	"github.com/alessiosavi/go-dontwastetime/internal/digest"
 	"github.com/alessiosavi/go-dontwastetime/internal/explore"
 	"github.com/alessiosavi/go-dontwastetime/internal/graph"
 	"github.com/alessiosavi/go-dontwastetime/internal/mailbox"
@@ -34,7 +35,7 @@ commands:
   serve        run pollers, classifier, threads, digest and alerts (launchd runs this)
   sync         one sync pass [--mailbox addr] [--initial-days n]
   classify     drain pending classify/thread jobs once [--limit n]
-  digest       build and send the digest [--date YYYY-MM-DD|today] [--dry-run]
+  digest       build and send the digest [--date YYYY-MM-DD|today] [--dry-run] [--since YYYY-MM-DD]
   explore      phase-0 clustering report [--days n] [--mailboxes a,b] [--max-messages n]
   eval         run --gold file.jsonl [--model name] [--out dir]
   mailboxes    discover [--write-config] | verify
@@ -108,6 +109,7 @@ func dispatch(ctx context.Context, cmd string, args []string, stdout, stderr io.
 	limit := fs.Int("limit", 0, "classify: max classify jobs to run (0 = all)")
 	fs.Bool("once", true, "classify: one pass (the only mode)")
 	date := fs.String("date", "today", "digest: YYYY-MM-DD or today (digest instant is 08:00 Europe/Rome)")
+	since := fs.String("since", "", "digest: include mail received since YYYY-MM-DD (00:00 Europe/Rome), without the late-mail cap")
 	days := fs.Int("days", 90, "explore: window in days")
 	mailboxes := fs.String("mailboxes", "", "explore: comma-separated mailboxes (default: all enabled)")
 	maxMessages := fs.Int("max-messages", 5000, "explore: total message cap")
@@ -128,6 +130,22 @@ func dispatch(ctx context.Context, cmd string, args []string, stdout, stderr io.
 	if cmd == "mcp" && (*operator == "" || len(pos) != 0) {
 		fmt.Fprintln(stderr, "usage: dwt mcp --operator <name> [common flags]")
 		return errUsage
+	}
+	var digestAt time.Time
+	var digestOpts digest.Options
+	if cmd == "digest" {
+		digestAt, err = digestInstant(*date, time.Now())
+		if err != nil {
+			return err
+		}
+		if *since != "" {
+			from, err := time.ParseInLocation(time.DateOnly, *since, config.Rome)
+			if err != nil || !from.Before(digestAt) {
+				fmt.Fprintln(stderr, "--since must be YYYY-MM-DD before the digest instant")
+				return errUsage
+			}
+			digestOpts.Since = from
+		}
 	}
 
 	n := need{}
@@ -171,14 +189,10 @@ func dispatch(ctx context.Context, cmd string, args []string, stdout, stderr io.
 	case "eval":
 		return a.evalCmd(ctx, *gold, *model, *evalOut, stdout)
 	case "digest":
-		at, err := digestInstant(*date, a.now())
-		if err != nil {
+		if err := a.runDigest(ctx, digestAt, *dryRun, nil, digestOpts); err != nil {
 			return err
 		}
-		if err := a.runDigest(ctx, at, *dryRun, nil); err != nil {
-			return err
-		}
-		fmt.Fprintf(stdout, "digest %s saved under %s (dry-run=%v)\n", config.Day(at), filepath.Join(a.cfg.StateDir, "digests"), *dryRun)
+		fmt.Fprintf(stdout, "digest %s saved under %s (dry-run=%v)\n", config.Day(digestAt), filepath.Join(a.cfg.StateDir, "digests"), *dryRun)
 		return nil
 	case "explore":
 		o := explore.Options{Days: *days, MaxMessages: *maxMessages, Mailboxes: splitList(*mailboxes)}

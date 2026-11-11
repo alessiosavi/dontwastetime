@@ -26,7 +26,9 @@ type DigestResult struct {
 
 // Digest builds today's preview without sweeping, writing or sending anything.
 // Earlier dates are read from saved files, never rebuilt from today's state.
-func (s *Service) Digest(ctx context.Context, date string) (DigestResult, error) {
+// A non-empty since is a received-time lower bound (YYYY-MM-DD, midnight Rome)
+// for today's preview only.
+func (s *Service) Digest(ctx context.Context, date, since string) (DigestResult, error) {
 	at := s.now()
 	today := config.Day(at)
 	if date != "" {
@@ -34,8 +36,22 @@ func (s *Service) Digest(ctx context.Context, date string) (DigestResult, error)
 			return DigestResult{}, invalid("data non valida: usare YYYY-MM-DD fino a oggi")
 		}
 	}
+	var opts digest.Options
+	if since != "" {
+		if date != "" && date != today {
+			return DigestResult{}, invalid("since non è valido con una data passata")
+		}
+		from, err := time.ParseInLocation(time.DateOnly, since, config.Rome)
+		if err != nil {
+			return DigestResult{}, invalid("since non valido: usare YYYY-MM-DD")
+		}
+		if !from.Before(at) {
+			return DigestResult{}, invalid("since deve precedere l'istante del digest")
+		}
+		opts.Since = from
+	}
 	if date == "" || date == today {
-		draft, err := digest.Build(ctx, s.store, s.cfg, s.taxonomy, at)
+		draft, err := digest.BuildWithOptions(ctx, s.store, s.cfg, s.taxonomy, at, opts)
 		if err != nil {
 			return DigestResult{}, storeError(err)
 		}
