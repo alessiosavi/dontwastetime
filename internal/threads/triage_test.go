@@ -124,9 +124,11 @@ func TestTriage_LaterMailboxCopyStaysAcknowledged(t *testing.T) {
 			id := e.add(t, mopt{from: "a@bigbrand.example", label: "clienti", at: t0})
 			now := t0.Add(30 * time.Hour)
 			e.status(t, "c:T", now)
+			due := *triageRow(t, e).ReplyDueAt
+			until := now.Add(24 * time.Hour)
 			applyTriage(t, e, now, func(tx *sql.Tx) error {
 				if kind == "snoozed" {
-					return store.SnoozeTx(ctx, tx, "c:T", id, now.Add(24*time.Hour), "operator", now)
+					return store.SnoozeTx(ctx, tx, "c:T", id, until, "operator", now)
 				}
 				return store.MarkHandledTx(ctx, tx, "c:T", id, "operator", "", now)
 			})
@@ -153,6 +155,15 @@ func TestTriage_LaterMailboxCopyStaysAcknowledged(t *testing.T) {
 				r.AckInboundAt == nil || !r.AckInboundAt.Equal(t0) {
 				t.Fatalf("later copy reopened %s mail: status=%+v row=%+v", kind, st, r)
 			}
+			if kind == "snoozed" && (r.ReplyDueAt == nil || !r.ReplyDueAt.Equal(due) || !st.DueAt.Equal(due) ||
+				r.SnoozedUntil == nil || !r.SnoozedUntil.Equal(until)) {
+				t.Fatalf("later copy changed snooze: status=%+v row=%+v", st, r)
+			}
+			e.add(t, mopt{from: "a@bigbrand.example", label: "clienti", at: t0.Add(-time.Second), insertedAt: now})
+			e.status(t, "c:T", now)
+			if after := triageRow(t, e); !reflect.DeepEqual(r, after) {
+				t.Fatalf("older backfill changed %s mail: before=%+v after=%+v", kind, r, after)
+			}
 			// A distinct mail at exactly the copy's timestamp must reopen it.
 			newID := e.add(t, mopt{from: "a@bigbrand.example", label: "clienti", at: copy.ReceivedAt, insertedAt: now})
 			e.status(t, "c:T", now)
@@ -162,6 +173,50 @@ func TestTriage_LaterMailboxCopyStaysAcknowledged(t *testing.T) {
 			}
 			assertNoAck(t, r)
 		})
+	}
+}
+
+func TestTriage_DistinctInboundBeforeLaterCopyReopens(t *testing.T) {
+	for _, kind := range []string{"handled", "snoozed"} {
+		for _, delta := range []time.Duration{0, 30 * time.Second} {
+			t.Run(kind+"/"+delta.String(), func(t *testing.T) {
+				e := newEnv(t)
+				ctx := context.Background()
+				id := e.add(t, mopt{from: "a@bigbrand.example", label: "clienti", at: t0})
+				now := t0.Add(30 * time.Hour)
+				e.status(t, "c:T", now)
+				applyTriage(t, e, now, func(tx *sql.Tx) error {
+					if kind == "snoozed" {
+						return store.SnoozeTx(ctx, tx, "c:T", id, now.Add(24*time.Hour), "operator", now)
+					}
+					return store.MarkHandledTx(ctx, tx, "c:T", id, "operator", "", now)
+				})
+				e.add(t, mopt{from: "a@bigbrand.example", label: "clienti", at: t0.Add(delta), insertedAt: now})
+				m, err := e.s.Message(ctx, id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				copy := m.Graph()
+				copy.Mailbox, copy.ID = "person.one@example.com", "later-copy"
+				copy.ReceivedAt = t0.Add(time.Minute)
+				copyID, _, err := e.s.UpsertMessage(ctx, copy, "c:T", now)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := e.s.SaveClassification(ctx, store.Classification{MessageID: copyID, Label: "clienti", Method: "llm"}, now); err != nil {
+					t.Fatal(err)
+				}
+				st := e.status(t, "c:T", now)
+				r := triageRow(t, e)
+				if r.LastInboundMessageID != copyID {
+					t.Fatalf("test requires the later mailbox copy as last inbound: %+v", r)
+				}
+				if StateOf(r, now) != "overdue" || !st.NeedsReply || st.DueAt.IsZero() || !r.NeedsReply || r.ReplyDueAt == nil {
+					t.Fatalf("distinct inbound hidden by later copy left %s mail closed: status=%+v row=%+v", kind, st, r)
+				}
+				assertNoAck(t, r)
+			})
+		}
 	}
 }
 

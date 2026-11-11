@@ -12,6 +12,8 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"github.com/alessiosavi/go-dontwastetime/internal/store"
 )
 
 func ratio(c Count) string {
@@ -33,7 +35,7 @@ func (r Report) Markdown(model string) []byte {
 	fmt.Fprintf(&b, "Accuracy: %s\n\nCoverage: %s\n\n", ratio(r.Accuracy), ratio(r.Coverage))
 	fmt.Fprintf(&b, "Rows: %d; scored: %d; Missing: %d; Budget skipped: %d\n\n", len(r.Rows), r.Accuracy.Total, r.Missing, r.BudgetSkipped)
 	if r.BudgetStopped {
-		b.WriteString("Stopped: llm daily budget reached; metrics cover completed rows only.\n\n")
+		fmt.Fprintf(&b, "Stopped: %v; metrics cover completed rows only.\n\n", store.ErrBudgetReached)
 	}
 	fmt.Fprintf(&b, "Reply precision: %s\n\nReply recall: %s\n\n", ratio(Count{r.ReplyTP, r.ReplyTP + r.ReplyFP}), ratio(Count{r.ReplyTP, r.ReplyTP + r.ReplyFN}))
 	fmt.Fprintf(&b, "LLM tokens: %d (input %d, output %d)\n\n", r.Usage.In+r.Usage.Out, r.Usage.In, r.Usage.Out)
