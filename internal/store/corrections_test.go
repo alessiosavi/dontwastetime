@@ -52,3 +52,43 @@ func TestMuteThread(t *testing.T) {
 		t.Fatal("muting an unknown thread accepted")
 	}
 }
+
+func TestClassification_ReplyExpectedRoundtripAndCorrection(t *testing.T) {
+	for _, reply := range []*bool{nil, new(true), new(false)} {
+		s := openTest(t)
+		ctx := context.Background()
+		id, _ := upsert(t, s, msg("m@example.test", "<reply@x>", now0))
+		c := Classification{MessageID: id, Label: "accounting", Confidence: 0.9, Method: "llm", ReplyExpected: reply}
+		if err := s.SaveClassification(ctx, c, now0); err != nil {
+			t.Fatal(err)
+		}
+		check := func() {
+			t.Helper()
+			cl, err := s.ClassificationOf(ctx, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			messages, err := s.ThreadMessages(ctx, "tk-<reply@x>")
+			if err != nil || len(messages) != 1 {
+				t.Fatalf("messages=%+v, err=%v", messages, err)
+			}
+			for _, got := range []*bool{cl.ReplyExpected, messages[0].ReplyExpected} {
+				if (got == nil) != (reply == nil) || (got != nil && *got != *reply) {
+					t.Fatalf("reply_expected=%v, want %v", got, reply)
+				}
+			}
+		}
+		check()
+		if err := s.AddCorrection(ctx, id, "accounting", "admin.requests", "owner", now0.Add(time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		check()
+		// Reclassification still replaces the reply decision, including with NULL.
+		reply = nil
+		c.ReplyExpected = nil
+		if err := s.SaveClassification(ctx, c, now0.Add(2*time.Hour)); err != nil {
+			t.Fatal(err)
+		}
+		check()
+	}
+}

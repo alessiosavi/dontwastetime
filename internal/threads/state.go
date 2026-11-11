@@ -33,7 +33,7 @@ const (
 	backlogAge = 14 * 24 * time.Hour
 )
 
-// thresholds: labels that expect a reply. Every other label: never.
+// thresholds supplies label SLAs and the reply fallback for NULL decisions.
 var thresholds = map[string]time.Duration{
 	"clienti": 24 * time.Hour, "business.dev": 24 * time.Hour,
 	"ops.spaces": 48 * time.Hour, "eventi.internal": 48 * time.Hour, "eventi.external": 48 * time.Hour,
@@ -122,7 +122,10 @@ func Recompute(ctx context.Context, s *store.Store, key string, cfg *config.Conf
 	}
 
 	st := Status{Cassetto: cassetto}
-	threshold := thresholds[cassetto]
+	threshold, tracked := thresholds[cassetto]
+	if !tracked {
+		threshold = 48 * time.Hour
+	}
 	open := lastIn != nil && (lastOurs == nil || lastOurs.ReceivedAt.Before(lastIn.ReceivedAt)) &&
 		lastIn.InsertedAt.Sub(lastIn.ReceivedAt) <= backlogAge && row.MutedAt == nil
 	if open && ReplyDecision(cassetto, lastIn) {
@@ -167,8 +170,14 @@ func priority(m *store.ThreadMessage, known bool, age time.Duration) string {
 // expects a reply. Timing, backlog, mute and known-client policy are deliberately
 // excluded so evaluation can measure the classification's reply decision.
 func ReplyDecision(label string, m *store.ThreadMessage) bool {
+	if m == nil || suppressed(m) {
+		return false
+	}
+	if m.ReplyExpected != nil {
+		return *m.ReplyExpected
+	}
 	_, tracked := thresholds[label]
-	return m != nil && tracked && !suppressed(m)
+	return tracked
 }
 
 func suppressed(m *store.ThreadMessage) bool {
@@ -318,8 +327,8 @@ func alertMailbox(cfg *config.Config, address string) bool {
 	return false
 }
 
-// Threshold is the reply threshold of a label; ok=false means the label
-// never expects a reply.
+// Threshold is the configured SLA of a label; ok=false means no label fallback.
+// An explicit reply_expected=true still opens an obligation with a 48h SLA.
 func Threshold(label string) (time.Duration, bool) {
 	d, ok := thresholds[label]
 	return d, ok

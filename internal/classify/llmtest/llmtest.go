@@ -19,6 +19,7 @@ type Item struct {
 	From    string `json:"from"`
 	Subject string `json:"subject"`
 	Preview string `json:"preview"`
+	Bulk    bool   `json:"bulk"`
 }
 
 // Request is what the fake saw.
@@ -98,13 +99,14 @@ func (f *Server) CallCount() int {
 
 // Answer is one result in the fake's JSON reply.
 type Answer struct {
-	ID         int64   `json:"id"`
-	Label      string  `json:"label"`
-	Confidence float64 `json:"confidence"`
-	Entity     string  `json:"entity,omitempty"`
-	Urgent     bool    `json:"urgent,omitempty"`
-	Negative   bool    `json:"negative,omitempty"`
-	Reason     string  `json:"reason"`
+	ID            int64   `json:"id"`
+	Label         string  `json:"label"`
+	Confidence    float64 `json:"confidence"`
+	Entity        string  `json:"entity,omitempty"`
+	Urgent        bool    `json:"urgent,omitempty"`
+	Negative      bool    `json:"negative,omitempty"`
+	Reason        string  `json:"reason"`
+	ReplyExpected *bool   `json:"reply_expected,omitempty"`
 }
 
 // Results renders answers as the {"results":[...]} object classify expects.

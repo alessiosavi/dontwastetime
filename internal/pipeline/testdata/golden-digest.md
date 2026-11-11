@@ -14,8 +14,11 @@ Posta arrivata da lun 9 nov 08:00 a mar 10 nov 08:00 sulle caselle seguite.
 
 ## Per cassetto
 
-### Amministrazione · Fatture (2)
+### Amministrazione · Fatture (5)
 
+- no-reply@shop.example — "Ricevuta del tuo ordine 3" — 15 ore fa — business@example.com — #31 — _mittente no-reply e oggetto da pagamento_
+- no-reply@shop.example — "Ricevuta del tuo ordine 2" — 16 ore fa — business@example.com — #28 — _mittente no-reply e oggetto da pagamento_
+- no-reply@shop.example — "Ricevuta del tuo ordine 1" — 17 ore fa — business@example.com — #24 — _mittente no-reply e oggetto da pagamento_
 - billing@vendor.example — "Fattura 2026/88" — 24 ore fa — business@example.com — #7 — _allegato pdf/xml e oggetto da fattura_
 - fatture@aruba.example — "Fattura n. 101 Example S.r.l." — 24 ore fa — business@example.com — #6 — _allegato pdf/xml e oggetto da fattura_
 
@@ -75,9 +78,9 @@ Posta arrivata da lun 9 nov 08:00 a mar 10 nov 08:00 sulle caselle seguite.
 - pr1@partner.example — "Comunicato stampa partner" — 16 ore fa — business@example.com — #27
 - pr0@partner.example — "Webinar novembre" — 16 ore fa — business@example.com — #26
 - go@weekly.example — "Weekly Go news" — 18 ore fa — tech@example.com — #44 — _mailing list (List-Id)_
-- news2@brand.example — "Il nostro magazine" — 18 ore fa — business@example.com — #22 — _newsletter (List-Unsubscribe)_
-- news1@brand.example — "Offerte della settimana" — 19 ore fa — business@example.com — #20 — _newsletter (List-Unsubscribe)_
-- news0@brand.example — "Le novità di novembre" — 20 ore fa — business@example.com — #16 — _newsletter (List-Unsubscribe)_
+- news2@brand.example — "Il nostro magazine" — 18 ore fa — business@example.com — #22
+- news1@brand.example — "Offerte della settimana" — 19 ore fa — business@example.com — #20
+- news0@brand.example — "Le novità di novembre" — 20 ore fa — business@example.com — #16
 
 ### Business · Sviluppo (2)
 
@@ -94,11 +97,11 @@ Posta arrivata da lun 9 nov 08:00 a mar 10 nov 08:00 sulle caselle seguite.
 - y@random.example — "Info" — 12 ore fa — business@example.com — #35 — _confidenza bassa (0.50) per business.dev_
 - x@strano.example — "Re: quella cosa" — 14 ore fa — business@example.com — #34 — _confidenza bassa (0.40) per clienti_
 
-**Notifiche:** 6 (solo conteggio)
+**Notifiche:** 3 (solo conteggio)
 
 ## Stato del sistema
 
 - Caselle con problemi: nessuna
 - Coda: 0 in attesa, 0 in errore definitivo
 - Mail in attesa di classificazione: 0
-- Budget classificatore: 1680 / 1000000 token (0%)
+- Budget classificatore: 1860 / 1000000 token (0%)

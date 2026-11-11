@@ -15,6 +15,7 @@ type Classification struct {
 	Confidence      float64
 	Urgent          bool
 	Negative        bool
+	ReplyExpected   *bool  // NULL means use the label's legacy reply policy
 	Method          string // rule | llm | correction
 	Model           string
 	Rationale       string
@@ -42,13 +43,14 @@ func (s *Store) SaveClassification(ctx context.Context, c Classification, now ti
 // SaveClassificationTx is SaveClassification inside the caller's transaction.
 func SaveClassificationTx(ctx context.Context, tx *sql.Tx, c Classification, now time.Time) error {
 	_, err := tx.ExecContext(ctx, `INSERT INTO classification(message_id, label, entity, confidence, urgent, negative,
-		method, model, rationale, cost_tokens, classified_at, taxonomy_version) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+		method, model, rationale, cost_tokens, classified_at, taxonomy_version, reply_expected) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(message_id) DO UPDATE SET label = excluded.label, entity = excluded.entity,
 		confidence = excluded.confidence, urgent = excluded.urgent, negative = excluded.negative, method = excluded.method,
 		model = excluded.model, rationale = excluded.rationale, cost_tokens = excluded.cost_tokens,
-		classified_at = excluded.classified_at, taxonomy_version = excluded.taxonomy_version`,
+		classified_at = excluded.classified_at, taxonomy_version = excluded.taxonomy_version,
+		reply_expected = CASE WHEN excluded.method = 'correction' THEN classification.reply_expected ELSE excluded.reply_expected END`,
 		c.MessageID, c.Label, c.Entity, c.Confidence, c.Urgent, c.Negative, c.Method, c.Model, c.Rationale,
-		c.CostTokens, ts(now), c.TaxonomyVersion)
+		c.CostTokens, ts(now), c.TaxonomyVersion, c.ReplyExpected)
 	if err != nil {
 		return fmt.Errorf("store: save classification %d: %w", c.MessageID, err)
 	}
@@ -67,9 +69,9 @@ func SaveClassificationTx(ctx context.Context, tx *sql.Tx, c Classification, now
 func (s *Store) ClassificationOf(ctx context.Context, messageID int64) (Classification, error) {
 	c := Classification{MessageID: messageID}
 	err := s.db.QueryRowContext(ctx, `SELECT label, entity, confidence, urgent, negative, method, model, rationale,
-		cost_tokens, taxonomy_version FROM classification WHERE message_id = ?`, messageID).Scan(
+		cost_tokens, taxonomy_version, reply_expected FROM classification WHERE message_id = ?`, messageID).Scan(
 		&c.Label, &c.Entity, &c.Confidence, &c.Urgent, &c.Negative, &c.Method, &c.Model, &c.Rationale,
-		&c.CostTokens, &c.TaxonomyVersion)
+		&c.CostTokens, &c.TaxonomyVersion, &c.ReplyExpected)
 	if err != nil {
 		return c, fmt.Errorf("store: classification %d: %w", messageID, err)
 	}

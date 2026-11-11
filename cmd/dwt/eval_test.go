@@ -54,6 +54,45 @@ func writeGold(t *testing.T, rows string) string {
 	return p
 }
 
+func TestEvalRun_ReplyExpectedAndBulkSuppression(t *testing.T) {
+	var noReplyID int64
+	a, f, llm := evalFixture(t, func(r llmtest.Request) llmtest.Reply {
+		var answers []llmtest.Answer
+		for _, it := range r.Items {
+			label, reply := "accounting", new(true)
+			if it.ID == noReplyID {
+				label, reply = "clienti", new(false)
+			}
+			answers = append(answers, llmtest.Answer{ID: it.ID, Label: label, Confidence: 0.9, ReplyExpected: reply})
+		}
+		return llmtest.Reply{Content: llmtest.Results(answers...), In: 100, Out: 20}
+	})
+	evalMessage(t, a, 1, "a@example.com")
+	noReplyID = evalMessage(t, a, 2, "a@example.com")
+	evalMessage(t, a, 3, "a@example.com")
+	f.Headers["g3"] = []graph.Header{{Name: "List-Unsubscribe", Value: "<mailto:u@x>"}}
+	gold := writeGold(t, `{"n":1,"mailbox":"a@example.com","internet_message_id":"<1@secret.example>","accept":["accounting"],"needs_reply":true}
+{"n":2,"mailbox":"a@example.com","internet_message_id":"<2@secret.example>","accept":["clienti"],"needs_reply":false}
+{"n":3,"mailbox":"a@example.com","internet_message_id":"<3@secret.example>","accept":["accounting"],"needs_reply":false}
+`)
+	before := evalSnapshot(t, a.s)
+	var out bytes.Buffer
+	if err := a.evalCmd(context.Background(), gold, "", "", &out); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Accuracy: 3/3", "Reply precision: 1/1", "Reply recall: 1/1"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("missing %q in report: %s", want, out.String())
+		}
+	}
+	if len(llm.Calls[0].Items) != 3 || !llm.Calls[0].Items[2].Bulk {
+		t.Fatal("eval did not pass the unsubscribe hint")
+	}
+	if !reflect.DeepEqual(before, evalSnapshot(t, a.s)) {
+		t.Fatal("eval wrote production state")
+	}
+}
+
 // Snapshot every cell, including leases/timestamps, rather than just row counts.
 func evalSnapshot(t *testing.T, s *store.Store) map[string]string {
 	t.Helper()
@@ -116,7 +155,7 @@ func TestEvalRun_ProductionPathMetricsAndNoStateWrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.Headers["g1"] = []graph.Header{{Name: "List-Unsubscribe", Value: "PRIVATE HEADER"}}
+	f.Headers["g1"] = []graph.Header{{Name: "List-Id", Value: "PRIVATE HEADER"}}
 	// Precedence:junk sets suppression without itself matching a rule.
 	f.Headers["g2"] = []graph.Header{{Name: "Precedence", Value: "junk"}}
 	if err := a.s.AddCorrection(ctx, id, "clienti", "marketing.news", "test", now0); err != nil {

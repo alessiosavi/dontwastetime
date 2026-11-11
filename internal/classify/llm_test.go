@@ -2,9 +2,14 @@ package classify
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -153,7 +158,10 @@ func TestLLM_PromptCarriesTaxonomyAndExamples(t *testing.T) {
 		t.Fatal(err)
 	}
 	sys := f.Calls[0].Raw["messages"].([]any)[0].(map[string]any)["content"].(string)
-	for _, want := range []string{"admin.invoices", "unsure", "Vorremmo ospitare un evento", "eventi.external", "JSON"} {
+	for _, want := range []string{"admin.invoices", "unsure", "Vorremmo ospitare un evento", "eventi.external", "JSON",
+		"bulk: true means the mail was sent in bulk", "receipts, payment notices, product or system",
+		"Payment receipts and failed payments are admin.invoices.", "Prospects and demos are business.dev",
+		"document requests from the external accountant"} {
 		if !contains(sys, want) {
 			t.Errorf("system prompt lacks %q", want)
 		}
@@ -172,4 +180,173 @@ func indexOf(s, sub string) int {
 		}
 	}
 	return -1
+}
+
+func TestLLM_ReplyExpectedToleratesInvalidFields(t *testing.T) {
+	for _, field := range []string{"true", "false", "null", "", `"true"`, "1", "{}", "[]"} {
+		t.Run(field, func(t *testing.T) {
+			extra := ""
+			if field != "" {
+				extra = `,"reply_expected":` + field
+			}
+			l, f, _ := newLLM(t, func(llmtest.Request) llmtest.Reply {
+				return llmtest.Reply{Content: fmt.Sprintf(`{"results":[{"id":1,"label":"clienti","confidence":0.9%s}]}`, extra), In: 10, Out: 5}
+			})
+			res, _, err := l.Classify(context.Background(), items[:1], taxonomy(t), nil)
+			if err != nil || f.CallCount() != 1 || len(res) != 1 || res[0].Label != "clienti" {
+				t.Fatalf("reply field caused classification failure/retry: %+v %v, calls=%d", res, err, f.CallCount())
+			}
+			got := res[0].ReplyExpected
+			if field == "true" || field == "false" {
+				if got == nil || *got != (field == "true") {
+					t.Fatalf("reply_expected=%v, want %s", got, field)
+				}
+			} else if got != nil {
+				t.Fatalf("malformed/missing reply_expected=%v; want nil", *got)
+			}
+			sys := f.Calls[0].Raw["messages"].([]any)[0].(map[string]any)["content"].(string)
+			for _, want := range []string{`"reply_expected":`, "reply_expected: true only if someone at the company", "false for automated mail", "cc-only mail", "messages that close a conversation"} {
+				if !contains(sys, want) {
+					t.Errorf("prompt lacks %q", want)
+				}
+			}
+		})
+	}
+}
+
+func TestLLM_UsageReservedBeforeCallAndSettled(t *testing.T) {
+	l, f, s := newLLM(t, nil)
+	day := config.Day(now0)
+	f.Respond = func(r llmtest.Request) llmtest.Reply {
+		raw, _ := json.Marshal(r.Raw)
+		in, out, err := s.UsageToday(context.Background(), day)
+		var calls int
+		callErr := s.DB().QueryRow("SELECT calls FROM llm_usage WHERE day=?", day).Scan(&calls)
+		if err != nil || callErr != nil || calls != 1 || in != len(raw)/4 || out != 0 {
+			t.Errorf("before response: calls=%d tokens=%d/%d, err=%v/%v, estimate=%d", calls, in, out, err, callErr, len(raw)/4)
+		}
+		return llmtest.Reply{Content: "done", In: 3, Out: 2}
+	}
+	if _, u, err := l.Complete(context.Background(), "test", 10); err != nil || u != (Usage{In: 3, Out: 2}) {
+		t.Fatalf("completion usage=%+v, err=%v", u, err)
+	}
+	in, out, err := s.UsageToday(context.Background(), day)
+	var calls int
+	callErr := s.DB().QueryRow("SELECT calls FROM llm_usage WHERE day=?", day).Scan(&calls)
+	if err != nil || callErr != nil || in != 3 || out != 2 || calls != 1 {
+		t.Fatalf("settled: calls=%d tokens=%d/%d err=%v/%v", calls, in, out, err, callErr)
+	}
+}
+
+func TestLLM_FailedCallsKeepReservationAndHitCap(t *testing.T) {
+	for _, failure := range []string{"http500", "timeout", "cancel", "reset", "malformed-envelope", "read-error"} {
+		t.Run(failure, func(t *testing.T) {
+			l, _, s := newLLM(t, llmtest.Label("clienti", 0.9))
+			cancelCtx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			estimates := make(chan int, 1)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				raw, _ := io.ReadAll(r.Body)
+				estimates <- len(raw) / 4
+				switch failure {
+				case "http500":
+					w.WriteHeader(http.StatusInternalServerError)
+				case "timeout":
+					<-r.Context().Done()
+				case "cancel":
+					// Deterministically cancel after the server receives the request.
+					cancel()
+					<-r.Context().Done()
+				case "reset":
+					conn, _, err := w.(http.Hijacker).Hijack()
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					conn.Close()
+				case "malformed-envelope":
+					_, _ = io.WriteString(w, "{}")
+				case "read-error":
+					w.Header().Set("Content-Length", "1000")
+					_, _ = io.WriteString(w, "{")
+				}
+			}))
+			defer srv.Close()
+			l.cfg.URL = srv.URL
+			l.cfg.DailyMaxTokens = 1
+			if failure == "timeout" {
+				l.http.Timeout = 200 * time.Millisecond
+			}
+			if _, _, err := l.Complete(cancelCtx, "test", 10); err == nil {
+				t.Fatal("failed request succeeded")
+			} else if failure == "timeout" && !errors.Is(err, context.DeadlineExceeded) {
+				t.Fatalf("expected deadline failure, got %v", err)
+			}
+			estimate := <-estimates
+			in, out, err := s.UsageToday(context.Background(), config.Day(now0))
+			if err != nil || in != estimate || out != 0 {
+				t.Fatalf("failed-call tokens=%d/%d, want %d/0, err=%v", in, out, estimate, err)
+			}
+			if _, _, err := l.Complete(context.Background(), "test", 10); !errors.Is(err, store.ErrBudgetReached) {
+				t.Fatalf("failed call did not exhaust cap: %v", err)
+			}
+		})
+	}
+}
+
+func TestLLM_JSONFallbackReservesBothCalls(t *testing.T) {
+	l, f, s := newLLM(t, nil)
+	f.Respond = func(r llmtest.Request) llmtest.Reply {
+		if r.JSONMode {
+			return llmtest.Reply{Status: http.StatusBadRequest}
+		}
+		return llmtest.Label("clienti", 0.9)(r)
+	}
+	_, u, err := l.Classify(context.Background(), items, taxonomy(t), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, _ := json.Marshal(f.Calls[0].Raw)
+	in, out, err := s.UsageToday(context.Background(), config.Day(now0))
+	var calls int
+	callErr := s.DB().QueryRow("SELECT calls FROM llm_usage WHERE day=?", config.Day(now0)).Scan(&calls)
+	if err != nil || callErr != nil || calls != 2 || in != len(raw)/4+100 || out != 20 || u.In != in || u.Out != out {
+		t.Fatalf("fallback calls=%d tokens=%d/%d usage=%+v, err=%v/%v", calls, in, out, u, err, callErr)
+	}
+}
+
+func TestLLM_UsageSettlesOnReservationDay(t *testing.T) {
+	l, f, s := newLLM(t, nil)
+	var crossedMidnight atomic.Bool
+	l.now = func() time.Time {
+		if crossedMidnight.Load() {
+			return now0.Add(24 * time.Hour)
+		}
+		return now0
+	}
+	f.Respond = func(r llmtest.Request) llmtest.Reply {
+		crossedMidnight.Store(true)
+		return llmtest.Label("clienti", 0.9)(r)
+	}
+	if _, _, err := l.Classify(context.Background(), items, taxonomy(t), nil); err != nil {
+		t.Fatal(err)
+	}
+	in, out, err := s.UsageToday(context.Background(), config.Day(now0))
+	if err != nil || in != 100 || out != 20 {
+		t.Fatalf("reservation day=%d/%d, err=%v", in, out, err)
+	}
+	in, out, err = s.UsageToday(context.Background(), config.Day(now0.Add(24*time.Hour)))
+	if err != nil || in != 0 || out != 0 {
+		t.Fatalf("response day=%d/%d, err=%v", in, out, err)
+	}
+}
+
+func TestLLM_ReservationFailurePreventsCall(t *testing.T) {
+	l, f, s := newLLM(t, llmtest.Label("clienti", 0.9))
+	if _, err := s.DB().Exec(`CREATE TRIGGER fail_usage BEFORE INSERT ON llm_usage BEGIN SELECT RAISE(FAIL, 'test reservation failure'); END`); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := l.Complete(context.Background(), "test", 10); err == nil || f.CallCount() != 0 {
+		t.Fatalf("reservation failure: err=%v, calls=%d", err, f.CallCount())
+	}
 }

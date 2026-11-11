@@ -27,6 +27,7 @@ type Item struct {
 	From    string `json:"from"`
 	Subject string `json:"subject"`
 	Preview string `json:"preview"`
+	Bulk    bool   `json:"bulk"`
 }
 
 // Usage is token usage of one or more calls.
@@ -79,7 +80,8 @@ func (l *LLM) checkBudget(ctx context.Context) error {
 	return nil
 }
 
-// chat performs one budget-checked completion and records its usage.
+// chat reserves estimated input before calling, then settles on actual usage.
+// Failed calls retain their reservation, including after caller cancellation.
 func (l *LLM) chat(ctx context.Context, msgs []chatMessage, maxTokens int, jsonMode bool) (string, Usage, error) {
 	if err := l.checkBudget(ctx); err != nil {
 		return "", Usage{}, err
@@ -102,27 +104,32 @@ func (l *LLM) chat(ctx context.Context, msgs []chatMessage, maxTokens int, jsonM
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+l.cfg.APIKey)
 	req.Header.Set("api-key", l.cfg.APIKey) // Azure AI Foundry key header
+	day := config.Day(l.now())
+	reserved := Usage{In: len(raw) / 4}
+	if err := l.s.UsageAdd(ctx, day, reserved.In, 0); err != nil {
+		return "", Usage{}, err
+	}
 	resp, err := l.http.Do(req)
 	if err != nil {
-		return "", Usage{}, fmt.Errorf("llm: request: %w", err)
+		return "", reserved, fmt.Errorf("llm: request: %w", err)
 	}
 	defer resp.Body.Close()
 	payload, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 	if err != nil {
-		return "", Usage{}, fmt.Errorf("llm: read response: %w", err)
+		return "", reserved, fmt.Errorf("llm: read response: %w", err)
 	}
 	switch {
 	case resp.StatusCode == http.StatusBadRequest:
-		return "", Usage{}, errBadRequest
+		return "", reserved, errBadRequest
 	case resp.StatusCode != http.StatusOK:
-		return "", Usage{}, fmt.Errorf("llm: HTTP %d", resp.StatusCode)
+		return "", reserved, fmt.Errorf("llm: HTTP %d", resp.StatusCode)
 	}
 	var cr chatResponse
 	if err := json.Unmarshal(payload, &cr); err != nil || len(cr.Choices) == 0 {
-		return "", Usage{}, fmt.Errorf("llm: malformed response envelope")
+		return "", reserved, fmt.Errorf("llm: malformed response envelope")
 	}
 	u := Usage{In: cr.Usage.PromptTokens, Out: cr.Usage.CompletionTokens}
-	if err := l.s.UsageAdd(ctx, config.Day(l.now()), u.In, u.Out); err != nil {
+	if err := l.s.UsageAdjust(ctx, day, u.In-reserved.In, u.Out); err != nil {
 		return "", u, err
 	}
 	return cr.Choices[0].Message.Content, u, nil
@@ -131,14 +138,19 @@ func (l *LLM) chat(ctx context.Context, msgs []chatMessage, maxTokens int, jsonM
 // chatJSON uses JSON mode when the endpoint supports it; a 400 drops it for
 // this and every later call.
 func (l *LLM) chatJSON(ctx context.Context, msgs []chatMessage) (string, Usage, error) {
+	var reserved Usage
 	if !l.noJSON.Load() {
 		out, u, err := l.chat(ctx, msgs, 0, true)
 		if !errors.Is(err, errBadRequest) {
 			return out, u, err
 		}
 		l.noJSON.Store(true)
+		reserved = u
 	}
-	return l.chat(ctx, msgs, 0, false)
+	out, u, err := l.chat(ctx, msgs, 0, false)
+	u.In += reserved.In
+	u.Out += reserved.Out
+	return out, u, err
 }
 
 // Complete runs a free-form prompt (explore mode). Budget-checked.
@@ -147,13 +159,14 @@ func (l *LLM) Complete(ctx context.Context, prompt string, maxTokens int) (strin
 }
 
 type answer struct {
-	ID         int64   `json:"id"`
-	Label      string  `json:"label"`
-	Confidence float64 `json:"confidence"`
-	Entity     string  `json:"entity"`
-	Urgent     bool    `json:"urgent"`
-	Negative   bool    `json:"negative"`
-	Reason     string  `json:"reason"`
+	ID            int64           `json:"id"`
+	Label         string          `json:"label"`
+	Confidence    float64         `json:"confidence"`
+	Entity        string          `json:"entity"`
+	Urgent        bool            `json:"urgent"`
+	Negative      bool            `json:"negative"`
+	Reason        string          `json:"reason"`
+	ReplyExpected json.RawMessage `json:"reply_expected"`
 }
 
 // Classify labels a batch (≤10 recommended) in one call; a malformed answer
@@ -189,6 +202,11 @@ func (l *LLM) Classify(ctx context.Context, batch []Item, t *Taxonomy, examples 
 		a, ok := byID[it.ID]
 		r := Result{ID: it.ID, Label: a.Label, Confidence: a.Confidence, Urgent: a.Urgent, Negative: a.Negative,
 			Method: MethodLLM, Rationale: a.Reason}
+		// A missing, null or wrongly typed field preserves legacy label fallback.
+		var reply *bool
+		if json.Unmarshal(a.ReplyExpected, &reply) == nil {
+			r.ReplyExpected = reply
+		}
 		if l.entities[a.Entity] {
 			r.Entity = a.Entity
 		}
@@ -246,6 +264,8 @@ func parseAnswers(s string) ([]answer, error) {
 func systemPrompt(t *Taxonomy, examples []store.Correction) string {
 	var b strings.Builder
 	b.WriteString("You classify business emails of an Italian company (Example) into exactly one label (\"cassetto\") each.\n")
+	b.WriteString("bulk: true means the mail was sent in bulk (unsubscribe header). Newsletters and promotions are marketing.news, but receipts, payment notices, product or system reports and alerts sent in bulk keep their own label (admin.invoices, notifications, tech.alerts).\n")
+	b.WriteString("reply_expected: true only if someone at the company is expected to answer this message by email (a real person asking us something or waiting for a response or action); false for automated mail, newsletters, receipts, FYI or cc-only mail, confirmations, and messages that close a conversation.\n")
 	b.WriteString("Labels:\n")
 	for _, k := range t.Order {
 		l := t.Labels[k]
@@ -265,6 +285,6 @@ func systemPrompt(t *Taxonomy, examples []store.Correction) string {
 			fmt.Fprintf(&b, "- from %s, subject %q → %s\n", e.From, e.Subject, e.NewLabel)
 		}
 	}
-	b.WriteString(`Answer with JSON only: {"results":[{"id":<id>,"label":"<label>","confidence":<0..1>,"entity":"","urgent":false,"negative":false,"reason":"<short, in Italian>"}]} with one result per input message.`)
+	b.WriteString(`Answer with JSON only: {"results":[{"id":<id>,"label":"<label>","confidence":<0..1>,"entity":"","urgent":false,"negative":false,"reply_expected":<true|false>,"reason":"<short, in Italian>"}]} with one result per input message.`)
 	return b.String()
 }

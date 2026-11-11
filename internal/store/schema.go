@@ -127,4 +127,8 @@ CREATE TABLE action_log (
 ALTER TABLE message ADD COLUMN first_classified_at TEXT;
 UPDATE message SET first_classified_at = classified_at WHERE classified_at IS NOT NULL;
 `,
+	// 3: explicit reply decisions; older classifications retain label fallback.
+	`
+ALTER TABLE classification ADD COLUMN reply_expected INTEGER;
+`,
 }

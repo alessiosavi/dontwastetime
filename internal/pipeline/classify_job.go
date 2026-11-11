@@ -114,7 +114,7 @@ func ClassifyMessages(ctx context.Context, s *store.Store, c *graph.Client, l *c
 		items := make([]classify.Item, len(chunk))
 		for i, r := range chunk {
 			items[i] = classify.Item{ID: r.ID, Mailbox: r.Mailbox, From: r.From, Subject: r.Subject,
-				Preview: stringutil.Truncate(r.BodyText, itemPreviewLen, "…")}
+				Preview: stringutil.Truncate(r.BodyText, itemPreviewLen, "…"), Bulk: r.IsBulk || r.IsList}
 		}
 		results, usage, err := l.Classify(ctx, items, t, examples)
 		total.In, total.Out = total.In+usage.In, total.Out+usage.Out
@@ -187,7 +187,7 @@ func degrade(ctx context.Context, id int64, what string, err error) error {
 func toClassification(id int64, r classify.Result, t *classify.Taxonomy, cost int) store.Classification {
 	return store.Classification{MessageID: id, Label: r.Label, Entity: r.Entity, Confidence: r.Confidence,
 		Urgent: r.Urgent, Negative: r.Negative, Method: r.Method, Rationale: r.Rationale, CostTokens: cost,
-		TaxonomyVersion: t.Version}
+		TaxonomyVersion: t.Version, ReplyExpected: r.ReplyExpected}
 }
 
 // saveClassified writes the classifications and their thread_refresh jobs
