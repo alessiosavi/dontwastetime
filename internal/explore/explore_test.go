@@ -186,6 +186,9 @@ func TestExplore_BudgetReachedStopsCleanly(t *testing.T) {
 	if len(paths) == 0 || !strings.Contains(read(t, paths[0]), "budget") {
 		t.Fatalf("partial report missing or silent about the budget stop: %v", paths)
 	}
+	if report := read(t, paths[0]); !strings.Contains(report, "token giornalieri o costo mensile") {
+		t.Fatalf("budget stop must name both caps:\n%s", report)
+	}
 	if e.llm.CallCount() != 0 {
 		t.Fatal("budget-stopped explore called the LLM")
 	}

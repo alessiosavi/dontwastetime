@@ -78,6 +78,14 @@ func TestScore_ReplyErrorsAndTopConfusions(t *testing.T) {
 	}
 }
 
+func TestReportMarkdown_BudgetStoppedNamesBothCaps(t *testing.T) {
+	r := Report{BudgetStopped: true}
+	text := string(r.Markdown("model"))
+	if !strings.Contains(text, "daily tokens or monthly cost") {
+		t.Fatalf("budget stop must name both caps:\n%s", text)
+	}
+}
+
 func TestReportWrite_PrivateAndNeverOverwrites(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "runs")
 	if err := os.Mkdir(dir, 0o755); err != nil {
