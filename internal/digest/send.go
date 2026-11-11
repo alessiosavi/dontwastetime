@@ -62,13 +62,20 @@ func Send(ctx context.Context, s *store.Store, c *graph.Client, cfg *config.Conf
 		return s.LogAction(ctx, "digest", "digest_dry_run", "digest:"+d.Day, map[string]any{"path": mdPath}, now)
 	}
 	// Reserve the day's delivery before the network call: concurrent or
-	// repeated runs must never send twice. A failed send gives it back.
+	// repeated runs must never send twice. A send Graph rejected gives it
+	// back; one that got no answer keeps it (it may have been delivered).
 	claimed, err := s.ClaimDigestSend(ctx, d.Day, mdPath, cfg.DigestRecipients, string(healthJSON), now)
 	if err != nil || !claimed {
 		return err // already sent (or being sent) today
 	}
 	if err := c.SendMail(ctx, cfg.DigestSender, cfg.DigestRecipients, d.Subject, d.HTML, false); err != nil {
-		_ = s.UnclaimDigestSend(context.WithoutCancel(ctx), d.Day)
+		if errors.Is(err, graph.ErrDeliveryUnknown) {
+			// Graph may have accepted it: keep the claim (at most once).
+			_ = s.LogAction(context.WithoutCancel(ctx), "digest", "digest_send_unknown", "digest:"+d.Day,
+				map[string]any{"recipients": len(cfg.DigestRecipients)}, now)
+		} else {
+			_ = s.UnclaimDigestSend(context.WithoutCancel(ctx), d.Day)
+		}
 		return fmt.Errorf("digest: send: %w", err)
 	}
 	return s.LogAction(ctx, "digest", "digest_sent", "digest:"+d.Day,

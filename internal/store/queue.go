@@ -132,6 +132,21 @@ func (s *Store) QueueDepth(ctx context.Context, now time.Time) (pending, failed,
 	return pending, failed, oldestPendingSeconds, nil
 }
 
+// LatestJobStatus is the status of the newest job for (kind, ref); "" when
+// there is none.
+func (s *Store) LatestJobStatus(ctx context.Context, kind string, ref int64) (string, error) {
+	var status string
+	err := s.db.QueryRowContext(ctx, `SELECT status FROM queue WHERE kind = ? AND ref = ? ORDER BY id DESC LIMIT 1`,
+		kind, ref).Scan(&status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("store: latest job: %w", err)
+	}
+	return status, nil
+}
+
 func (s *Store) setJob(ctx context.Context, q string, args ...any) error {
 	res, err := s.db.ExecContext(ctx, q, args...)
 	if err != nil {

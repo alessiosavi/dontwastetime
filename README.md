@@ -96,7 +96,10 @@ Every command accepts `--config`, `--state-dir`, `--env` and `--taxonomy`
 - **Restarts**: ingest and enqueue are one transaction; a restart resets
   interrupted jobs, clears stale leases and re-enqueues every unclassified
   message. Digests missed while the Mac slept go out when it wakes (the 3 most
-  recent working days at most), each at most once per day.
+  recent working days at most), each at most once per day. A digest whose
+  send keeps failing is retried every 15 minutes for the rest of the day; a
+  digest or P0 alert whose send got no answer from Graph is not retried, since
+  it may already have been delivered.
 - **Retention**: message bodies older than `retention_days` (365) are purged
   daily; metadata stays.
 

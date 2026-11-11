@@ -2,6 +2,7 @@ package threads
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -402,5 +403,30 @@ func TestRecompute_ConcurrentSnapshotsNeverWriteStale(t *testing.T) {
 	row, _ := e.s.Thread(context.Background(), "c:T")
 	if !row.NeedsReply || row.LastInboundAt == nil || !row.LastInboundAt.Equal(t0.Add(2*time.Hour)) {
 		t.Fatalf("stale snapshot overwrote the newer state: %+v", row)
+	}
+}
+
+func TestRefreshHandler_UnknownDeliveryKeepsDayClaim(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		err   error
+		calls int
+	}{
+		{"no answer: may be delivered", fmt.Errorf("alert: send: %w", graph.ErrDeliveryUnknown), 1},
+		{"rejected: retried", fmt.Errorf("alert: send: %w", &graph.HTTPError{Status: 503}), 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			id := e.add(t, mopt{from: "a@bigbrand.example", subject: "URGENTE consegna", label: "clienti", at: t0})
+			calls := 0
+			alert := func(context.Context, []store.ThreadRow) error { calls++; return tc.err }
+			h := RefreshHandler(e.s, e.cfg, alert, func() time.Time { return t0.Add(time.Hour) })
+			for range 2 {
+				_ = h(context.Background(), &store.Job{Ref: id})
+			}
+			if calls != tc.calls {
+				t.Fatalf("alert attempts = %d, want %d", calls, tc.calls)
+			}
+		})
 	}
 }

@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -61,6 +62,20 @@ type HTTPError struct {
 
 func (e *HTTPError) Error() string {
 	return fmt.Sprintf("graph: HTTP %d %s: %s", e.Status, e.Code, e.Message)
+}
+
+// noAnswerError is a request that got no HTTP answer at all (timeout, reset,
+// refused connection). Its message is the underlying error's.
+type noAnswerError struct{ err error }
+
+func (e *noAnswerError) Error() string { return e.err.Error() }
+func (e *noAnswerError) Unwrap() error { return e.err }
+
+// neverSent: the connection was never established, so the request cannot
+// have reached Graph.
+func (e *noAnswerError) neverSent() bool {
+	var op *net.OpError
+	return errors.As(e.err, &op) && op.Op == "dial"
 }
 
 // Client is safe for concurrent use.
@@ -143,7 +158,7 @@ func (c *Client) do(ctx context.Context, req request) (*http.Response, error) {
 		}
 		resp, err := c.http.Do(hr)
 		if err != nil {
-			return nil, fmt.Errorf("graph: %s %s: %w", req.method, redactURL(req.url), err)
+			return nil, fmt.Errorf("graph: %s %s: %w", req.method, redactURL(req.url), &noAnswerError{err})
 		}
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 			return resp, nil

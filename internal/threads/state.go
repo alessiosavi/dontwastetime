@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/alessiosavi/go-dontwastetime/internal/config"
+	"github.com/alessiosavi/go-dontwastetime/internal/graph"
 	"github.com/alessiosavi/go-dontwastetime/internal/store"
 )
 
@@ -266,14 +267,17 @@ func maybeAlert(ctx context.Context, s *store.Store, cfg *config.Config, alert A
 		return nil
 	}
 	// Claim before sending: concurrent refreshes/sweeps of the same thread
-	// must not both send. A failed send gives the claim back.
+	// must not both send. A rejected send gives the claim back; one that got
+	// no answer keeps it (it may have been delivered).
 	claimed, prev, err := s.ClaimP0Alert(ctx, key, day)
 	if err != nil || !claimed {
 		return err
 	}
 	row.P0AlertedDay = day
 	if err := alert(ctx, []store.ThreadRow{row}); err != nil {
-		_ = s.UnclaimP0Alert(context.WithoutCancel(ctx), key, prev)
+		if !errors.Is(err, graph.ErrDeliveryUnknown) {
+			_ = s.UnclaimP0Alert(context.WithoutCancel(ctx), key, prev)
+		}
 		return fmt.Errorf("threads: P0 alert for %q: %w", key, err)
 	}
 	return nil

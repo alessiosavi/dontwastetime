@@ -350,3 +350,24 @@ func TestSend_ConcurrentLiveSendsOnce(t *testing.T) {
 		t.Fatalf("concurrent sends delivered %d digests, want 1", n)
 	}
 }
+
+func TestSend_NoAnswerAfterAcceptSendsOnce(t *testing.T) {
+	f := seed(t)
+	var sends atomic.Int32
+	_, c := graphtest.New(t, func(w http.ResponseWriter, r *http.Request) {
+		sends.Add(1)                       // Graph accepts the mail…
+		time.Sleep(300 * time.Millisecond) // …but its answer misses the client timeout
+		w.WriteHeader(http.StatusAccepted)
+	}, graph.WithHTTPClient(&http.Client{Timeout: 100 * time.Millisecond}))
+	d, _ := Build(context.Background(), f.s, f.cfg, f.tx, at)
+	if err := Send(context.Background(), f.s, c, f.cfg, d, false, at); err == nil {
+		t.Fatal("a send without an answer must report an error")
+	}
+	retryErr := Send(context.Background(), f.s, c, f.cfg, d, false, at) // the queue's retry
+	if n := sends.Load(); n != 1 {
+		t.Fatalf("delivered %d digests, want 1 (an unanswered send may already be delivered)", n)
+	}
+	if retryErr != nil {
+		t.Fatalf("retry after an unknown outcome: %v, want a no-op", retryErr)
+	}
+}

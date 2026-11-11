@@ -17,6 +17,7 @@ import (
 	"github.com/alessiosavi/go-dontwastetime/internal/config"
 	"github.com/alessiosavi/go-dontwastetime/internal/graph"
 	"github.com/alessiosavi/go-dontwastetime/internal/graph/graphtest"
+	"github.com/alessiosavi/go-dontwastetime/internal/pipeline"
 	"github.com/alessiosavi/go-dontwastetime/internal/store"
 )
 
@@ -229,5 +230,55 @@ func TestParseArgs_FlagsAfterSubcommand(t *testing.T) {
 	pos, err := parseArgs(fs, []string{"discover", "--write-config"})
 	if err != nil || len(pos) != 1 || pos[0] != "discover" || !*write {
 		t.Fatalf("pos=%v write=%v err=%v", pos, *write, err)
+	}
+}
+
+func TestRetryDigest_ReenqueuesDeadLetteredToday(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 11, 11, 10, 0, 0, 0, config.Rome) // Wednesday, after the 08:00 run
+	run := todaysRun(now)
+	deadLetter := func(a *app) {
+		t.Helper()
+		if err := a.s.Enqueue(ctx, pipeline.KindDigest, run.Unix(), now); err != nil {
+			t.Fatal(err)
+		}
+		j, err := a.s.Claim(ctx, []string{pipeline.KindDigest}, now)
+		if err != nil || j == nil {
+			t.Fatalf("claim: %v %v", j, err)
+		}
+		for range store.MaxAttempts {
+			if err := a.s.Fail(ctx, j.ID, "sendMail 503", now); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	claim := func(a *app) *store.Job {
+		t.Helper()
+		j, err := a.s.Claim(ctx, []string{pipeline.KindDigest}, now.Add(time.Hour))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return j
+	}
+
+	a := testApp(t, nil)
+	deadLetter(a)
+	a.retryDigest(ctx, now)
+	if j := claim(a); j == nil || j.Ref != run.Unix() || j.Attempts != 0 {
+		t.Fatalf("dead-lettered digest not re-enqueued: %+v", j)
+	}
+	a.retryDigest(ctx, now) // the new job is running: no duplicate
+	if j := claim(a); j != nil {
+		t.Fatalf("duplicate digest job %+v", j)
+	}
+
+	sent := testApp(t, nil)
+	deadLetter(sent)
+	if ok, err := sent.s.ClaimDigestSend(ctx, config.Day(run), "p", []string{"x@example.com"}, "{}", now); err != nil || !ok {
+		t.Fatalf("mark sent: %v %v", ok, err)
+	}
+	sent.retryDigest(ctx, now)
+	if j := claim(sent); j != nil {
+		t.Fatalf("a sent day must not be re-enqueued: %+v", j)
 	}
 }

@@ -87,8 +87,8 @@ func (s *Store) DigestSent(ctx context.Context, day string) (bool, error) {
 
 // ClaimDigestSend atomically reserves the day's live delivery (sent_at set
 // before the network call). false means another sender already holds it.
-// On a failed send call UnclaimDigestSend; a crash in between leaves the day
-// marked sent (at most once, never twice).
+// On a rejected send call UnclaimDigestSend; a crash in between, or a send
+// that got no answer, leaves the day marked sent (at most once, never twice).
 func (s *Store) ClaimDigestSend(ctx context.Context, day, path string, recipients []string, healthJSON string, now time.Time) (bool, error) {
 	rcpt, err := json.Marshal(nonNil(recipients))
 	if err != nil {

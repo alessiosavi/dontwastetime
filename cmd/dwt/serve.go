@@ -54,7 +54,8 @@ func (a *app) runDigest(ctx context.Context, at time.Time, dryRun bool, alert th
 }
 
 // serve runs everything until ctx ends: boot, pollers, worker pool, and the
-// scheduler (digest, SLA sweep, hourly verification, daily retention).
+// scheduler (digest, SLA sweep + same-day digest retry, hourly verification,
+// daily retention).
 func (a *app) serve(ctx context.Context, dryRun bool) error {
 	if err := a.boot(ctx); err != nil {
 		return err
@@ -125,6 +126,7 @@ func (a *app) schedule(ctx context.Context, dryRun bool) {
 			if err := threads.Sweep(ctx, a.s, a.cfg, a.alerter(dryRun), now); err != nil {
 				logger().Warn("thread sweep", "err", err)
 			}
+			a.retryDigest(ctx, now)
 			nextSweep = now.Add(sweepEvery)
 		}
 		if !now.Before(nextVerify) {
@@ -145,6 +147,31 @@ func (a *app) schedule(ctx context.Context, dryRun bool) {
 		case <-t.C:
 		}
 	}
+}
+
+// retryDigest re-enqueues today's due digest when it is not sent and its
+// latest job dead-lettered (or none exists): a daemon that keeps running must
+// not lose the day's digest to a burst of send failures. A claimed day
+// (including a send that got no answer) and a finished dry run are left alone.
+func (a *app) retryDigest(ctx context.Context, now time.Time) {
+	run := todaysRun(now)
+	if run.IsZero() {
+		return
+	}
+	sent, err := a.s.DigestSent(ctx, config.Day(run))
+	if err != nil || sent {
+		return
+	}
+	status, err := a.s.LatestJobStatus(ctx, pipeline.KindDigest, run.Unix())
+	if err != nil {
+		logger().Warn("digest retry check", "err", err)
+		return
+	}
+	if status != "" && status != "failed" {
+		return
+	}
+	logger().Warn("re-enqueueing today's unsent digest", "at", run, "previous_job", orDash(status))
+	_ = a.enqueueDigest(ctx, run)
 }
 
 func (a *app) enqueueDigest(ctx context.Context, at time.Time) error {

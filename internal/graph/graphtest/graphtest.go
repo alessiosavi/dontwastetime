@@ -24,8 +24,9 @@ type Server struct {
 	APICalls atomic.Int32
 }
 
-// New starts a fake and returns it with a client pointed at it.
-func New(t testing.TB, api http.HandlerFunc) (*Server, *graph.Client) {
+// New starts a fake and returns it with a client pointed at it; opts are
+// applied after the defaults (e.g. graph.WithHTTPClient for a short timeout).
+func New(t testing.TB, api http.HandlerFunc, opts ...graph.Option) (*Server, *graph.Client) {
 	t.Helper()
 	f := &Server{API: api}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -40,9 +41,9 @@ func New(t testing.TB, api http.HandlerFunc) (*Server, *graph.Client) {
 	}))
 	t.Cleanup(srv.Close)
 	f.URL = srv.URL
-	c := graph.New("tenant", "client", "secret",
-		graph.WithBaseURL(srv.URL+"/v1.0"), graph.WithAuthURL(srv.URL),
-		graph.WithClock(func() time.Time { return Clock }))
+	c := graph.New("tenant", "client", "secret", append([]graph.Option{
+		graph.WithBaseURL(srv.URL + "/v1.0"), graph.WithAuthURL(srv.URL),
+		graph.WithClock(func() time.Time { return Clock })}, opts...)...)
 	return f, c
 }
 

@@ -6,10 +6,12 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestMessageHeaders_Parsed(t *testing.T) {
@@ -126,5 +128,49 @@ func TestSendMail_202Only(t *testing.T) {
 	}
 	if calls.Load() != 1 {
 		t.Errorf("refused send must not hit the network: %d calls", calls.Load())
+	}
+}
+
+func TestSendMail_DeliveryUnknownOnlyWithoutAnswer(t *testing.T) {
+	ctx := context.Background()
+	send := func(ctx context.Context, c *Client) error {
+		return c.SendMail(ctx, "admin@example.test", []string{"a@example.test"}, "s", "h", false)
+	}
+
+	// Graph got the request but its answer misses the client timeout.
+	_, slow, _ := newFake(t, func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(300 * time.Millisecond)
+		w.WriteHeader(http.StatusAccepted)
+	})
+	slow.http = &http.Client{Timeout: 100 * time.Millisecond}
+	if err := send(ctx, slow); !errors.Is(err, ErrDeliveryUnknown) {
+		t.Fatalf("no answer after sending: err = %v, want ErrDeliveryUnknown", err)
+	}
+
+	// Graph answered with an error: definitely not delivered.
+	_, rejected, _ := newFake(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) })
+	if err := send(ctx, rejected); err == nil || errors.Is(err, ErrDeliveryUnknown) {
+		t.Fatalf("HTTP 503: err = %v, want a definite failure", err)
+	}
+
+	// Connection refused: the request never left.
+	dead := httptest.NewServer(http.NotFoundHandler())
+	deadURL := dead.URL
+	dead.Close()
+	_, refused, _ := newFake(t, nil)
+	refused.baseURL = deadURL + "/v1.0"
+	if err := send(ctx, refused); err == nil || errors.Is(err, ErrDeliveryUnknown) {
+		t.Fatalf("connection refused: err = %v, want a definite failure", err)
+	}
+
+	// Context already cancelled (token cached): the request never left.
+	_, warm, _ := newFake(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusAccepted) })
+	if err := send(ctx, warm); err != nil {
+		t.Fatal(err)
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if err := send(cancelled, warm); err == nil || errors.Is(err, ErrDeliveryUnknown) {
+		t.Fatalf("cancelled before sending: err = %v, want a definite failure", err)
 	}
 }
