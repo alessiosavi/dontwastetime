@@ -33,7 +33,10 @@ type app struct {
 }
 
 // need selects which fail-closed credential checks a command runs.
-type need struct{ graph, llm bool }
+type need struct {
+	graph, llm bool
+	model      string // optional per-command model, applied before credential checks
+}
 
 // paths are the common flags every command accepts.
 type paths struct{ config, stateDir, env, taxonomy string }
@@ -54,6 +57,9 @@ func openApp(p paths, n need) (*app, error) {
 	}
 	if p.stateDir != "" {
 		cfg.StateDir = p.stateDir
+	}
+	if n.model != "" {
+		cfg.LLM.Model = n.model
 	}
 	if n.graph {
 		if err := cfg.RequireGraph(); err != nil {

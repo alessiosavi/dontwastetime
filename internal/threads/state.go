@@ -122,10 +122,10 @@ func Recompute(ctx context.Context, s *store.Store, key string, cfg *config.Conf
 	}
 
 	st := Status{Cassetto: cassetto}
-	threshold, tracked := thresholds[cassetto]
+	threshold := thresholds[cassetto]
 	open := lastIn != nil && (lastOurs == nil || lastOurs.ReceivedAt.Before(lastIn.ReceivedAt)) &&
-		lastIn.InsertedAt.Sub(lastIn.ReceivedAt) <= backlogAge && !suppressed(lastIn) && row.MutedAt == nil
-	if open && tracked {
+		lastIn.InsertedAt.Sub(lastIn.ReceivedAt) <= backlogAge && row.MutedAt == nil
+	if open && ReplyDecision(cassetto, lastIn) {
 		age := now.Sub(lastIn.ReceivedAt)
 		st.DueAt = lastIn.ReceivedAt.Add(threshold)
 		if cassetto == "clienti" {
@@ -161,6 +161,14 @@ func priority(m *store.ThreadMessage, known bool, age time.Duration) string {
 		return PriorityP1 // urgency on an unknown domain is at most P1
 	}
 	return PriorityP2
+}
+
+// ReplyDecision reports whether an unanswered thread with this latest inbound
+// expects a reply. Timing, backlog, mute and known-client policy are deliberately
+// excluded so evaluation can measure the classification's reply decision.
+func ReplyDecision(label string, m *store.ThreadMessage) bool {
+	_, tracked := thresholds[label]
+	return m != nil && tracked && !suppressed(m)
 }
 
 func suppressed(m *store.ThreadMessage) bool {
