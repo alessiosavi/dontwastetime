@@ -34,6 +34,7 @@ func TestReplyDecision_SuppressionAndNoTiming(t *testing.T) {
 		{Subject: "Risposta automatica: Contratto"}, {Subject: "Accettato: Riunione"},
 		{IsAuto: true}, {IsBulk: true}, {IsList: true},
 	} {
+		m.Urgent, m.Negative, m.ReplyExpected = true, true, new(false)
 		if ReplyDecision("clienti", &m) {
 			t.Errorf("suppressed message opened a reply obligation: %+v", m)
 		}
@@ -76,10 +77,74 @@ func TestReplyDecision_NeverReplyLabels(t *testing.T) {
 	for _, label := range []string{"personal", "notifications", "marketing.news", "tech.alerts"} {
 		t.Run(label, func(t *testing.T) {
 			for _, reply := range []*bool{nil, new(true), new(false)} {
-				m := store.ThreadMessage{From: "person@external.example", ReplyExpected: reply}
+				m := store.ThreadMessage{From: "person@external.example", Urgent: true, Negative: true, ReplyExpected: reply}
 				if ReplyDecision(label, &m) {
 					t.Errorf("excluded label opened an obligation with reply_expected=%v", reply)
 				}
+			}
+		})
+	}
+}
+
+func TestRefreshHandler_ClientiReplyExpectedFalse(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		msg    mopt
+		wantP0 bool
+	}{
+		{"urgent subject", mopt{label: "clienti", subject: "URGENTE consegna"}, true},
+		{"urgent preview", mopt{label: "clienti", subject: "Consegna", body: "Serve entro domani"}, true},
+		{"urgent flag", mopt{label: "clienti", subject: "Consegna", urgent: true}, true},
+		{"negative flag", mopt{label: "clienti", subject: "Consegna", negative: true}, true},
+		{"thanks received", mopt{label: "clienti", subject: "Grazie, ricevuto"}, false},
+		{"suppressed", mopt{label: "clienti", subject: "URGENTE consegna", negative: true, auto: true}, false},
+		{"personal", mopt{label: "personal", subject: "URGENTE consegna", negative: true}, false},
+		{"other label", mopt{label: "business.dev", subject: "URGENTE consegna", negative: true}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			ctx := context.Background()
+			o := tc.msg
+			o.from, o.at, o.replyExpected = "a@bigbrand.example", t0, new(false)
+			id := e.add(t, o)
+			alerts := 0
+			h := RefreshHandler(e.s, e.cfg, func(_ context.Context, rows []store.ThreadRow) error {
+				alerts += len(rows)
+				for _, row := range rows {
+					if row.ThreadKey != "c:T" || !row.NeedsReply || row.Priority != PriorityP0 {
+						t.Errorf("unexpected alert row: %+v", row)
+					}
+				}
+				return nil
+			}, func() time.Time { return t0.Add(time.Hour) })
+			for range 2 {
+				if err := h(ctx, &store.Job{Ref: id}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			row, err := e.s.Thread(ctx, "c:T")
+			if err != nil {
+				t.Fatal(err)
+			}
+			wantPriority, wantAlerts := "", 0
+			if tc.wantP0 {
+				wantPriority, wantAlerts = PriorityP0, 1
+				if row.ReplyDueAt == nil || !row.ReplyDueAt.Equal(t0.Add(24*time.Hour)) {
+					t.Errorf("reply due at %v, want %v", row.ReplyDueAt, t0.Add(24*time.Hour))
+				}
+			} else {
+				if row.ReplyDueAt != nil {
+					t.Errorf("unexpected reply obligation due at %v", row.ReplyDueAt)
+				}
+				if st := e.status(t, "c:T", t0.Add(25*time.Hour)); st.NeedsReply || !st.DueAt.IsZero() || st.Priority != "" {
+					t.Errorf("unexpected obligation after client SLA: %+v", st)
+				}
+			}
+			if row.NeedsReply != tc.wantP0 || row.Priority != wantPriority {
+				t.Errorf("needs reply=%v, priority=%q; want %v, %q", row.NeedsReply, row.Priority, tc.wantP0, wantPriority)
+			}
+			if alerts != wantAlerts {
+				t.Errorf("alerts on the same day = %d, want %d", alerts, wantAlerts)
 			}
 		})
 	}

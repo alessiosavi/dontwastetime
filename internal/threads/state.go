@@ -173,14 +173,18 @@ func priority(m *store.ThreadMessage, known bool, age time.Duration) string {
 }
 
 // ReplyDecision reports whether an unanswered thread with this latest inbound
-// expects a reply. Timing, backlog, mute and known-client policy are deliberately
-// excluded so evaluation can measure the classification's reply decision.
+// expects a reply. After suppression and label exclusions, urgent or negative
+// clienti mail always expects a reply. Timing, backlog, mute and known-client
+// policy are excluded so evaluation can measure the classification's reply decision.
 func ReplyDecision(label string, m *store.ThreadMessage) bool {
 	if m == nil || suppressed(m) {
 		return false
 	}
 	if _, excluded := neverReplyLabels[label]; excluded {
 		return false
+	}
+	if label == "clienti" && (m.Urgent || m.Negative || urgencyRe.MatchString(m.Subject+" "+m.Preview)) {
+		return true
 	}
 	if m.ReplyExpected != nil {
 		return *m.ReplyExpected
@@ -334,11 +338,4 @@ func alertMailbox(cfg *config.Config, address string) bool {
 		}
 	}
 	return false
-}
-
-// Threshold is the configured SLA of a label; ok=false means no label fallback.
-// Without a label fallback, eligible reply_expected=true messages use a 48h SLA.
-func Threshold(label string) (time.Duration, bool) {
-	d, ok := thresholds[label]
-	return d, ok
 }
