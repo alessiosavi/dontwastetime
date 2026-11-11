@@ -53,7 +53,7 @@ func TestVisible_ThreadSpanningUnmanagedBox(t *testing.T) {
 		if err != nil || !slices.Equal(visibleIDs(rows), []int64{visible}) {
 			t.Errorf("VisibleMessages IDs=%v err=%v", visibleIDs(rows), err)
 		}
-		hits, err := s.SearchVisible(ctx, scope, `"contratto"`, MessageFilter{}, 10)
+		hits, err := s.SearchVisible(ctx, scope, `"contratto"`, MessageFilter{}, "relevance", 10)
 		if err != nil || len(hits) != 1 || hits[0].ID != visible {
 			t.Errorf("SearchVisible hits=%v err=%v, want only %d", hits, err, visible)
 		}
@@ -97,7 +97,7 @@ func TestVisible_PersonalAndUnclassifiedIncluded(t *testing.T) {
 		!slices.Equal(p.To, m.To) || !slices.Equal(p.CC, m.CC) || !p.ReceivedAt.Equal(now0) || p.SentAt == nil || !p.SentAt.Equal(m.SentAt) {
 		t.Fatalf("classified message metadata mismatch, err=%v", err)
 	}
-	hits, err := s.SearchVisible(ctx, v, `"contratto"`, MessageFilter{}, 10)
+	hits, err := s.SearchVisible(ctx, v, `"contratto"`, MessageFilter{}, "relevance", 10)
 	if err != nil || len(hits) != 3 {
 		t.Fatalf("personal/unclassified search hits=%d err=%v", len(hits), err)
 	}
@@ -178,7 +178,7 @@ func TestVisibleMessages_FiltersAndNewestFirst(t *testing.T) {
 				t.Fatalf("IDs=%v err=%v, want %v", visibleIDs(rows), err, tc.want)
 			}
 			// Search must apply precisely the same predicates before its cap.
-			hits, err := s.SearchVisible(ctx, v, `"contratto"`, tc.f, 20)
+			hits, err := s.SearchVisible(ctx, v, `"contratto"`, tc.f, "relevance", 20)
 			var got []int64
 			for _, hit := range hits {
 				got = append(got, hit.ID)
@@ -276,7 +276,7 @@ func TestVisible_EmptyScopeDeniesAllReads(t *testing.T) {
 		if _, err := s.VisibleThreadMessages(ctx, v, "tk-<scope@x>"); !errors.Is(err, ErrNotFound) {
 			t.Fatalf("empty scope thread err=%v", err)
 		}
-		hits, err := s.SearchVisible(ctx, v, `"corpo"`, MessageFilter{}, 20)
+		hits, err := s.SearchVisible(ctx, v, `"corpo"`, MessageFilter{}, "relevance", 20)
 		if err != nil || len(hits) != 0 {
 			t.Fatalf("empty scope search=%v err=%v", hits, err)
 		}
@@ -302,7 +302,7 @@ func TestSearchVisible_RankAndCapAfterFiltering(t *testing.T) {
 	m.InternetMessageID, m.BodyText = "<best@x>", "contratto"
 	best, _ := upsert(t, s, m)
 	for _, cap := range []int{1, 2} {
-		hits, err := s.SearchVisible(ctx, v, `"contratto"`, MessageFilter{}, cap)
+		hits, err := s.SearchVisible(ctx, v, `"contratto"`, MessageFilter{}, "relevance", cap)
 		if err != nil || len(hits) != cap || hits[0].ID != best {
 			t.Fatalf("rank/cap hits=%v err=%v", hits, err)
 		}

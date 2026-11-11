@@ -21,6 +21,7 @@ import (
 	"github.com/alessiosavi/go-dontwastetime/internal/graph/graphtest"
 	"github.com/alessiosavi/go-dontwastetime/internal/pipeline"
 	"github.com/alessiosavi/go-dontwastetime/internal/store"
+	"github.com/alessiosavi/go-dontwastetime/internal/threads"
 )
 
 var now0 = time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
@@ -318,6 +319,167 @@ func TestCorrect_ReportsOldLabelAndEnqueuesRefresh(t *testing.T) {
 				t.Fatalf("pending thread refresh jobs=%d, err=%v, want 1", counts["pending"], err)
 			}
 		})
+	}
+}
+
+func cliApp(t *testing.T) (*app, string) {
+	t.Helper()
+	path := mcpConfig(t)
+	a, err := openApp(paths{config: path}, need{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(a.close)
+	at := a.now()
+	a.now = func() time.Time { return at }
+	return a, path
+}
+
+func cliInbound(t *testing.T, a *app, key, ref string, received time.Time, label string) int64 {
+	t.Helper()
+	ctx := context.Background()
+	id, _, err := a.s.UpsertMessage(ctx, graph.Message{ID: ref, InternetMessageID: "<" + ref + "@external.test>",
+		Mailbox: a.cfg.Mailboxes[0].Address, Folder: store.FolderInbox, From: "client@external.test",
+		Subject: "Contratto", ReceivedAt: received}, key, received)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.s.SaveClassification(ctx, store.Classification{MessageID: id, Label: label, Method: "llm"}, received); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := threads.Recompute(ctx, a.s, key, a.cfg, a.now()); err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func cliCommand(t *testing.T, path string, args ...string) string {
+	t.Helper()
+	var out, errb bytes.Buffer
+	if code := run(append(args, "--config", path), &out, &errb); code != 0 {
+		t.Fatalf("%s exit=%d stderr=%q", args[0], code, errb.String())
+	}
+	if strings.Count(out.String(), "\n") != 1 || errb.Len() != 0 {
+		t.Fatalf("%s stdout=%q stderr=%q; want one output line", args[0], out.String(), errb.String())
+	}
+	return out.String()
+}
+
+func TestCLI_HandledThenNewInboundReopens(t *testing.T) {
+	a, path := cliApp(t)
+	ctx := context.Background()
+	id := cliInbound(t, a, "c:handled", "handled-old", a.now().Add(-48*time.Hour), "clienti")
+	out := cliCommand(t, path, "handled", "#"+strconv.FormatInt(id, 10), "--note", "risolto al telefono")
+	r, err := a.s.Thread(ctx, "c:handled")
+	if err != nil || r.AckKind != "handled" || r.NeedsReply || r.ReplyDueAt != nil || !strings.Contains(out, "c:handled → handled") {
+		t.Fatalf("handled state=%+v err=%v output=%q", r, err, out)
+	}
+	var actor, details string
+	if err := a.s.DB().QueryRow(`SELECT actor, details_json FROM action_log WHERE action='mark_handled'`).Scan(&actor, &details); err != nil {
+		t.Fatal(err)
+	}
+	if actor != "cli" || !strings.Contains(details, "risolto al telefono") {
+		t.Fatalf("audit actor=%q details=%q", actor, details)
+	}
+	newID := cliInbound(t, a, "c:handled", "handled-new", a.now().Add(-time.Hour), "clienti")
+	r, err = a.s.Thread(ctx, "c:handled")
+	if err != nil || r.AckKind != "" || r.ReplyDueAt == nil || r.LastInboundMessageID != newID {
+		t.Fatalf("new inbound did not reopen obligation: state=%+v err=%v", r, err)
+	}
+}
+
+func TestCLI_SnoozeAndReopen(t *testing.T) {
+	a, path := cliApp(t)
+	ctx := context.Background()
+	id := cliInbound(t, a, "c:snooze", "snooze", a.now().Add(-48*time.Hour), "clienti")
+	ref := strconv.FormatInt(id, 10)
+	original, err := a.s.Thread(ctx, "c:snooze")
+	if err != nil || original.ReplyDueAt == nil {
+		t.Fatalf("setup obligation=%+v err=%v", original, err)
+	}
+	until := a.now().In(config.Rome).AddDate(0, 0, 1).Format(time.DateOnly)
+	cliCommand(t, path, "snooze", ref, until)
+	r, err := a.s.Thread(ctx, "c:snooze")
+	day, parseErr := time.ParseInLocation(time.DateOnly, until, config.Rome)
+	if parseErr != nil {
+		t.Fatal(parseErr)
+	}
+	wantUntil := time.Date(day.Year(), day.Month(), day.Day(), 8, 0, 0, 0, config.Rome)
+	if err != nil || r.AckKind != "snoozed" || r.SnoozedUntil == nil || !r.SnoozedUntil.Equal(wantUntil) ||
+		r.NeedsReply || r.ReplyDueAt == nil || !r.ReplyDueAt.Equal(*original.ReplyDueAt) {
+		t.Fatalf("snoozed state=%+v err=%v", r, err)
+	}
+	cliCommand(t, path, "reopen", "c:snooze")
+	r, err = a.s.Thread(ctx, "c:snooze")
+	if err != nil || r.AckKind != "" || r.SnoozedUntil != nil || !r.NeedsReply {
+		t.Fatalf("reopened snooze=%+v err=%v", r, err)
+	}
+	cliCommand(t, path, "handled", ref)
+	cliCommand(t, path, "reopen", "#"+ref)
+	cliCommand(t, path, "mute-thread", ref)
+	r, err = a.s.Thread(ctx, "c:snooze")
+	if err != nil || r.MutedAt == nil || r.NeedsReply {
+		t.Fatalf("muted state=%+v err=%v", r, err)
+	}
+	cliCommand(t, path, "reopen", ref)
+	r, err = a.s.Thread(ctx, "c:snooze")
+	if err != nil || r.MutedAt != nil || r.AckKind != "" || r.SnoozedUntil != nil || !r.NeedsReply {
+		t.Fatalf("reopened mute=%+v err=%v", r, err)
+	}
+	var count int
+	if err := a.s.DB().QueryRow(`SELECT count(*) FROM action_log WHERE actor='cli' AND action IN ('snooze','reopen','mute_thread','mark_handled')`).Scan(&count); err != nil || count != 6 {
+		t.Fatalf("audit actions=%d err=%v, want 6", count, err)
+	}
+}
+
+func TestCLI_CorrectRecomputesThread(t *testing.T) {
+	a, path := cliApp(t)
+	ctx := context.Background()
+	id := cliInbound(t, a, "c:correct", "correct", a.now().Add(-48*time.Hour), "clienti")
+	cliCommand(t, path, "correct", "#"+strconv.FormatInt(id, 10), "marketing.news")
+	r, err := a.s.Thread(ctx, "c:correct")
+	if err != nil || r.NeedsReply || r.ReplyDueAt != nil || r.Cassetto != "marketing.news" {
+		t.Fatalf("correct left stale thread state: needs_reply=%v bucket=%q due=%v err=%v", r.NeedsReply, r.Cassetto, r.ReplyDueAt, err)
+	}
+}
+
+func TestCLI_HandledAndSnoozeRejectStaleInbound(t *testing.T) {
+	a, path := cliApp(t)
+	id := cliInbound(t, a, "c:stale", "stale-old", a.now().Add(-48*time.Hour), "clienti")
+	cliInbound(t, a, "c:stale", "stale-new", a.now().Add(-time.Hour), "clienti")
+	for _, args := range [][]string{
+		{"handled", strconv.FormatInt(id, 10)},
+		{"snooze", "#" + strconv.FormatInt(id, 10), a.now().AddDate(0, 0, 1).Format(time.DateOnly)},
+	} {
+		var out, errb bytes.Buffer
+		if code := run(append(args, "--config", path), &out, &errb); code != 1 || !strings.Contains(errb.String(), "selezione non aggiornata") || out.Len() != 0 {
+			t.Errorf("%s stale selection: exit=%d stdout=%q stderr=%q", args[0], code, out.String(), errb.String())
+		}
+	}
+	var count int
+	if err := a.s.DB().QueryRow(`SELECT count(*) FROM action_log`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("stale calls wrote %d actions, err=%v", count, err)
+	}
+}
+
+func TestCLI_TriageRespectsEnabledMailboxes(t *testing.T) {
+	a, path := cliApp(t)
+	a.cfg.Mailboxes[0].Address = "disabled@example.test"
+	id := cliInbound(t, a, "c:disabled", "disabled", a.now().Add(-48*time.Hour), "clienti")
+	ref := strconv.FormatInt(id, 10)
+	for _, args := range [][]string{
+		{"correct", ref, "marketing.news"}, {"mute-thread", ref}, {"mute-thread", "c:disabled"},
+		{"handled", "#" + ref}, {"snooze", ref, a.now().AddDate(0, 0, 1).Format(time.DateOnly)},
+		{"reopen", ref}, {"reopen", "c:disabled"},
+	} {
+		var out, errb bytes.Buffer
+		if code := run(append(args, "--config", path), &out, &errb); code != 1 || !strings.Contains(errb.String(), "non trovato") || out.Len() != 0 {
+			t.Errorf("%s disabled mailbox: exit=%d stdout=%q stderr=%q", args[0], code, out.String(), errb.String())
+		}
+	}
+	var count int
+	if err := a.s.DB().QueryRow(`SELECT count(*) FROM action_log`).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("out-of-scope calls wrote %d actions, err=%v", count, err)
 	}
 }
 

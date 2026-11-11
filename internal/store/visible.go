@@ -19,6 +19,7 @@ type MessageFilter struct {
 	Mailbox, Bucket, From, Domain, Direction string
 	HasAttachments                           *bool
 	Since, Until                             *time.Time
+	UnclassifiedOnly                         bool // no classification row; applied before limits
 }
 
 // VisibleMessage includes classification metadata, empty for unclassified mail.
@@ -53,6 +54,9 @@ func visiblePredicate(v Visibility, f MessageFilter) (string, []any) {
 			clauses = append(clauses, filter.column+" = ?")
 			args = append(args, filter.value)
 		}
+	}
+	if f.UnclassifiedOnly {
+		clauses = append(clauses, "c.message_id IS NULL")
 	}
 	if f.From != "" {
 		clauses = append(clauses, "lower(m.from_addr) = ?")
@@ -133,8 +137,17 @@ func (s *Store) VisibleMessages(ctx context.Context, v Visibility, f MessageFilt
 
 // VisibleMessage treats a missing or out-of-scope id identically.
 func (s *Store) VisibleMessage(ctx context.Context, v Visibility, id int64) (VisibleMessage, error) {
+	return visibleMessage(ctx, s.db, v, id)
+}
+
+// VisibleMessageTx is VisibleMessage inside the caller's transaction.
+func VisibleMessageTx(ctx context.Context, tx *sql.Tx, v Visibility, id int64) (VisibleMessage, error) {
+	return visibleMessage(ctx, tx, v, id)
+}
+
+func visibleMessage(ctx context.Context, q querier, v Visibility, id int64) (VisibleMessage, error) {
 	where, args := visiblePredicate(v, MessageFilter{})
-	r, err := scanVisibleMessage(s.db.QueryRowContext(ctx,
+	r, err := scanVisibleMessage(q.QueryRowContext(ctx,
 		`SELECT `+visibleMessageCols+visibleMessageFrom+where+` AND m.id = ?`, append(args, id)...))
 	if errors.Is(err, sql.ErrNoRows) {
 		err = ErrNotFound
@@ -156,16 +169,21 @@ func (s *Store) VisibleThreadMessages(ctx context.Context, v Visibility, key str
 }
 
 // SearchVisible applies scope and metadata filters before capping raw FTS5
-// results. match is the literal MATCH expression produced by FTSQuery.
-func (s *Store) SearchVisible(ctx context.Context, v Visibility, match string, f MessageFilter, cap int) ([]SearchHit, error) {
+// results in the requested order (recent or relevance, the default).
+// match is the literal MATCH expression produced by FTSQuery.
+func (s *Store) SearchVisible(ctx context.Context, v Visibility, match string, f MessageFilter, order string, cap int) ([]SearchHit, error) {
 	if cap <= 0 {
 		return nil, nil
 	}
 	where, args := visiblePredicate(v, f)
+	orderBy := "bm25(message_fts), m.id DESC"
+	if order == "recent" {
+		orderBy = "m.received_at DESC, m.id DESC"
+	}
 	rows, err := s.db.QueryContext(ctx, `SELECT m.id, bm25(message_fts)
 		FROM message_fts JOIN message m ON m.id = message_fts.rowid
 		LEFT JOIN classification c ON c.message_id = m.id
-		WHERE `+where+` AND message_fts MATCH ? ORDER BY bm25(message_fts), m.id DESC LIMIT ?`, append(args, match, cap)...)
+		WHERE `+where+` AND message_fts MATCH ? ORDER BY `+orderBy+` LIMIT ?`, append(args, match, cap)...)
 	if err != nil {
 		return nil, fmt.Errorf("store: search visible: %w", err)
 	}

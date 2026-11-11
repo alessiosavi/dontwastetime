@@ -18,6 +18,7 @@ import (
 	"github.com/alessiosavi/go-dontwastetime/internal/graph"
 	"github.com/alessiosavi/go-dontwastetime/internal/mailbox"
 	"github.com/alessiosavi/go-dontwastetime/internal/pipeline"
+	"github.com/alessiosavi/go-dontwastetime/internal/service"
 	"github.com/alessiosavi/go-dontwastetime/internal/store"
 )
 
@@ -90,7 +91,9 @@ func openApp(p paths, n need) (*app, error) {
 	if n.graph {
 		a.c = graph.New(cfg.Graph.TenantID, cfg.Graph.ClientID, cfg.Graph.ClientSecret, graph.WithClock(time.Now))
 	}
-	a.llm = classify.NewLLM(cfg.LLM, s, a.now)
+	if n.llm {
+		a.llm = classify.NewLLM(cfg.LLM, s, a.now)
+	}
 	return a, nil
 }
 
@@ -211,18 +214,44 @@ func mergeMailboxes(path string, found []string) ([]string, error) {
 // muteThread accepts a message id ("57" or "#57", as printed in the digest)
 // or a thread key.
 func (a *app) muteThread(ctx context.Context, id string, out io.Writer) error {
-	key := id
-	if n, err := strconv.ParseInt(strings.TrimPrefix(id, "#"), 10, 64); err == nil {
-		m, err := a.s.Message(ctx, n)
-		if err != nil {
-			return err
-		}
-		key = m.ThreadKey
-	}
-	if err := a.s.MuteThread(ctx, key, "cli", a.now()); err != nil {
+	return a.triageCmd(ctx, "mute-thread", id, "", out)
+}
+
+func (a *app) cliService() (*service.Service, error) {
+	return service.New(a.s, a.cfg, a.tx, service.Options{CLI: true}, a.now)
+}
+
+// triageCmd preserves the selected inbound id for stale checks. The service
+// resolves its thread within the enabled mailbox scope and audits the action.
+func (a *app) triageCmd(ctx context.Context, cmd, ref, value string, out io.Writer) error {
+	svc, err := a.cliService()
+	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "muted thread %s\n", key)
+	n, numberErr := strconv.ParseInt(strings.TrimPrefix(ref, "#"), 10, 64)
+	if (cmd == "handled" || cmd == "snooze") && (numberErr != nil || n <= 0) {
+		return fmt.Errorf("%s: message id %q is not a positive number", cmd, ref)
+	}
+	if numberErr == nil {
+		ref = "#" + strconv.FormatInt(n, 10)
+	}
+	var state service.ThreadState
+	switch cmd {
+	case "handled":
+		state, err = svc.MarkHandled(ctx, ref, n, value)
+	case "snooze":
+		state, err = svc.Snooze(ctx, ref, n, value)
+	case "mute-thread":
+		state, err = svc.Mute(ctx, ref)
+	case "reopen":
+		state, err = svc.Reopen(ctx, ref)
+	default:
+		return fmt.Errorf("unknown triage command %q", cmd)
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "thread %s → %s\n", state.Thread, state.State)
 	return nil
 }
 
@@ -232,14 +261,15 @@ func (a *app) correct(ctx context.Context, id, label string, out io.Writer) erro
 	if err != nil {
 		return fmt.Errorf("correct: message id %q is not a number", id)
 	}
-	if !a.tx.Has(label) {
-		return fmt.Errorf("correct: unknown label %q (see taxonomy.json)", label)
-	}
-	old, err := a.s.AddCorrection(ctx, n, label, "cli", a.now())
+	svc, err := a.cliService()
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "message %d: %s → %s (used as a few-shot example from now on)\n", n, orDash(old), label)
+	r, err := svc.Relabel(ctx, n, label)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(out, "message %d: %s → %s (used as a few-shot example from now on)\n", n, orDash(r.Old), r.New)
 	return nil
 }
 

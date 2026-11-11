@@ -88,24 +88,30 @@ func (s *Store) ClassificationOf(ctx context.Context, messageID int64) (Classifi
 // logs it and enqueues a thread refresh, all in one transaction.
 func (s *Store) AddCorrection(ctx context.Context, messageID int64, newLabel, by string, now time.Time) (oldLabel string, err error) {
 	err = s.WithTx(ctx, func(tx *sql.Tx) error {
-		if err := tx.QueryRowContext(ctx, `SELECT label FROM classification WHERE message_id = ?`, messageID).Scan(&oldLabel); err != nil && !errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("store: correction old label %d: %w", messageID, err)
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO corrections(message_id, old_label, new_label, by, at) VALUES (?,?,?,?,?)`,
-			messageID, oldLabel, newLabel, by, ts(now)); err != nil {
-			return fmt.Errorf("store: add correction: %w", err)
-		}
-		if err := SaveClassificationTx(ctx, tx, Classification{MessageID: messageID, Label: newLabel, Confidence: 1,
-			Method: "correction", Rationale: "corrected by " + by}, now); err != nil {
-			return err
-		}
-		if err := logActionTx(ctx, tx, by, "correct", "message:"+strconv.FormatInt(messageID, 10),
-			map[string]any{"old": oldLabel, "new": newLabel}, now); err != nil {
-			return err
-		}
-		return s.EnqueueTx(ctx, tx, KindThreadRefresh, messageID, now)
+		oldLabel, err = s.AddCorrectionTx(ctx, tx, messageID, newLabel, by, now)
+		return err
 	})
 	return oldLabel, err
+}
+
+// AddCorrectionTx is AddCorrection inside the caller's transaction.
+func (s *Store) AddCorrectionTx(ctx context.Context, tx *sql.Tx, messageID int64, newLabel, by string, now time.Time) (oldLabel string, err error) {
+	if err := tx.QueryRowContext(ctx, `SELECT label FROM classification WHERE message_id = ?`, messageID).Scan(&oldLabel); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return "", fmt.Errorf("store: correction old label %d: %w", messageID, err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO corrections(message_id, old_label, new_label, by, at) VALUES (?,?,?,?,?)`,
+		messageID, oldLabel, newLabel, by, ts(now)); err != nil {
+		return oldLabel, fmt.Errorf("store: add correction: %w", err)
+	}
+	if err := SaveClassificationTx(ctx, tx, Classification{MessageID: messageID, Label: newLabel, Confidence: 1,
+		Method: "correction", Rationale: "corrected by " + by}, now); err != nil {
+		return oldLabel, err
+	}
+	if err := logActionTx(ctx, tx, by, "correct", "message:"+strconv.FormatInt(messageID, 10),
+		map[string]any{"old": oldLabel, "new": newLabel}, now); err != nil {
+		return oldLabel, err
+	}
+	return oldLabel, s.EnqueueTx(ctx, tx, KindThreadRefresh, messageID, now)
 }
 
 // RecentCorrections returns the newest n corrections with message context.

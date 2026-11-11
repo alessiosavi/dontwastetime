@@ -411,6 +411,25 @@ func TestAlert_P0Only(t *testing.T) {
 	}
 }
 
+func TestAlert_FooterSuggestsHandled(t *testing.T) {
+	f := newFx(t)
+	mail, _, c := graphtest.NewMail(t)
+	rows := []store.ThreadRow{{ThreadKey: "c:phone", Priority: "P0", LastInboundMessageID: 57}}
+	if err := Alert(context.Background(), f.s, c, f.cfg, rows, false, at); err != nil {
+		t.Fatal(err)
+	}
+	if mail.SentCount() != 1 {
+		t.Fatalf("alert mails=%d, want 1", mail.SentCount())
+	}
+	msg := mail.Sent[0].Payload["message"].(map[string]any)
+	body := msg["body"].(map[string]any)["content"].(string)
+	for _, want := range []string{"dwt handled", "gestita a voce", "dwt mute-thread"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("alert footer missing %q", want)
+		}
+	}
+}
+
 func TestBuild_LinesCarryMessageIDs(t *testing.T) {
 	f := seed(t)
 	d, err := Build(context.Background(), f.s, f.cfg, f.tx, at)
