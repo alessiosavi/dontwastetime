@@ -166,7 +166,7 @@ func TestRecompute_CorrectionPreservesClientiFlags(t *testing.T) {
 			if st := e.status(t, "c:T", t0.Add(time.Hour)); !st.NeedsReply || st.Priority != PriorityP0 {
 				t.Fatalf("initial obligation: %+v", st)
 			}
-			if err := e.s.AddCorrection(ctx, id, "clienti", "clienti", "cli", t0.Add(time.Hour)); err != nil {
+			if _, err := e.s.AddCorrection(ctx, id, "clienti", "cli", t0.Add(time.Hour)); err != nil {
 				t.Fatal(err)
 			}
 			cl, err := e.s.ClassificationOf(ctx, id)

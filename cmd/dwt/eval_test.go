@@ -195,7 +195,7 @@ func TestEvalRun_ProductionPathMetricsAndNoStateWrites(t *testing.T) {
 	f.Headers["g1"] = []graph.Header{{Name: "List-Id", Value: "PRIVATE HEADER"}}
 	// Precedence:junk sets suppression without itself matching a rule.
 	f.Headers["g2"] = []graph.Header{{Name: "Precedence", Value: "junk"}}
-	if err := a.s.AddCorrection(ctx, id, "clienti", "marketing.news", "test", now0); err != nil {
+	if _, err := a.s.AddCorrection(ctx, id, "marketing.news", "test", now0); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := a.s.UpsertThreadFromMessage(ctx, id, now0); err != nil {

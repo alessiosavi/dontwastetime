@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -197,6 +198,40 @@ func TestMuteThread_ByMessageID(t *testing.T) {
 	}
 	if row, _ := a.s.Thread(ctx, "c:T"); row.MutedAt == nil {
 		t.Fatal("thread not muted via message id")
+	}
+}
+
+func TestCorrect_ReportsOldLabelAndEnqueuesRefresh(t *testing.T) {
+	for _, old := range []string{"business.dev", ""} {
+		t.Run(orDash(old), func(t *testing.T) {
+			a := testApp(t, nil, "a@example.com")
+			ctx := context.Background()
+			id, _, err := a.s.UpsertMessage(ctx, graph.Message{ID: "g", InternetMessageID: "<correct@x>",
+				Mailbox: "a@example.com", Folder: "inbox", ReceivedAt: now0}, "c:T", now0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if old != "" {
+				if err := a.s.SaveClassification(ctx, store.Classification{MessageID: id, Label: old, Method: "llm"}, now0); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var out bytes.Buffer
+			if err := a.correct(ctx, "#"+strconv.FormatInt(id, 10), "clienti", &out); err != nil {
+				t.Fatal(err)
+			}
+			want := "business.dev → clienti"
+			if old == "" {
+				want = "- → clienti"
+			}
+			if !strings.Contains(out.String(), want) {
+				t.Errorf("output=%q, want %q", out.String(), want)
+			}
+			counts, err := a.s.JobCounts(ctx, pipeline.KindThreadRefresh, id)
+			if err != nil || counts["pending"] != 1 {
+				t.Fatalf("pending thread refresh jobs=%d, err=%v, want 1", counts["pending"], err)
+			}
+		})
 	}
 }
 

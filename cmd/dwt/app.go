@@ -235,11 +235,8 @@ func (a *app) correct(ctx context.Context, id, label string, out io.Writer) erro
 	if !a.tx.Has(label) {
 		return fmt.Errorf("correct: unknown label %q (see taxonomy.json)", label)
 	}
-	old := ""
-	if c, err := a.s.ClassificationOf(ctx, n); err == nil {
-		old = c.Label
-	}
-	if err := a.s.AddCorrection(ctx, n, old, label, "cli", a.now()); err != nil {
+	old, err := a.s.AddCorrection(ctx, n, label, "cli", a.now())
+	if err != nil {
 		return err
 	}
 	fmt.Fprintf(out, "message %d: %s → %s (used as a few-shot example from now on)\n", n, orDash(old), label)

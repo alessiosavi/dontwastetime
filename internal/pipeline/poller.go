@@ -19,8 +19,8 @@ import (
 
 // Job kinds.
 const (
-	KindClassify      = "classify"
-	KindThreadRefresh = "thread_refresh"
+	KindClassify      = store.KindClassify
+	KindThreadRefresh = store.KindThreadRefresh
 	KindDigest        = "digest"
 )
 

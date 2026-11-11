@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -51,7 +52,8 @@ func SaveClassificationTx(ctx context.Context, tx *sql.Tx, c Classification, now
 		method = excluded.method,
 		model = excluded.model, rationale = excluded.rationale, cost_tokens = excluded.cost_tokens,
 		classified_at = excluded.classified_at, taxonomy_version = excluded.taxonomy_version,
-		reply_expected = CASE WHEN excluded.method = 'correction' THEN classification.reply_expected ELSE excluded.reply_expected END`,
+		reply_expected = CASE WHEN excluded.method = 'correction' THEN classification.reply_expected ELSE excluded.reply_expected END
+		WHERE classification.method <> 'correction' OR excluded.method = 'correction'`,
 		c.MessageID, c.Label, c.Entity, c.Confidence, c.Urgent, c.Negative, c.Method, c.Model, c.Rationale,
 		c.CostTokens, ts(now), c.TaxonomyVersion, c.ReplyExpected)
 	if err != nil {
@@ -81,11 +83,14 @@ func (s *Store) ClassificationOf(ctx context.Context, messageID int64) (Classifi
 	return c, nil
 }
 
-// AddCorrection records a human relabel, makes it the message's
-// classification (method 'correction', confidence 1) and logs it, in one
-// transaction.
-func (s *Store) AddCorrection(ctx context.Context, messageID int64, oldLabel, newLabel, by string, now time.Time) error {
-	return s.WithTx(ctx, func(tx *sql.Tx) error {
+// AddCorrection reads and returns the old label, records a human relabel,
+// makes it the message's classification (method 'correction', confidence 1),
+// logs it and enqueues a thread refresh, all in one transaction.
+func (s *Store) AddCorrection(ctx context.Context, messageID int64, newLabel, by string, now time.Time) (oldLabel string, err error) {
+	err = s.WithTx(ctx, func(tx *sql.Tx) error {
+		if err := tx.QueryRowContext(ctx, `SELECT label FROM classification WHERE message_id = ?`, messageID).Scan(&oldLabel); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("store: correction old label %d: %w", messageID, err)
+		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO corrections(message_id, old_label, new_label, by, at) VALUES (?,?,?,?,?)`,
 			messageID, oldLabel, newLabel, by, ts(now)); err != nil {
 			return fmt.Errorf("store: add correction: %w", err)
@@ -94,9 +99,13 @@ func (s *Store) AddCorrection(ctx context.Context, messageID int64, oldLabel, ne
 			Method: "correction", Rationale: "corrected by " + by}, now); err != nil {
 			return err
 		}
-		return logActionTx(ctx, tx, by, "correct", "message:"+strconv.FormatInt(messageID, 10),
-			map[string]any{"old": oldLabel, "new": newLabel}, now)
+		if err := logActionTx(ctx, tx, by, "correct", "message:"+strconv.FormatInt(messageID, 10),
+			map[string]any{"old": oldLabel, "new": newLabel}, now); err != nil {
+			return err
+		}
+		return s.EnqueueTx(ctx, tx, KindThreadRefresh, messageID, now)
 	})
+	return oldLabel, err
 }
 
 // RecentCorrections returns the newest n corrections with message context.

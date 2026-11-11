@@ -12,6 +12,12 @@ import (
 // MaxAttempts after which a failing job is dead-lettered (status 'failed').
 const MaxAttempts = 5
 
+// Job kinds shared by store mutations and pipeline handlers.
+const (
+	KindClassify      = "classify"
+	KindThreadRefresh = "thread_refresh"
+)
+
 const maxErrLen = 500
 
 // Job is one claimed queue row.
