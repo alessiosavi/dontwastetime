@@ -1,0 +1,32 @@
+{
+  "@odata.nextLink": "{{BASE}}/v1.0/users/marketing%40example.test/mailFolders/inbox/messages?$skiptoken=page2",
+  "value": [
+    {
+      "id": "AAMk-1",
+      "internetMessageId": "<m1@client.example>",
+      "conversationId": "conv-1",
+      "subject": "Rinnovo contratto",
+      "from": {"emailAddress": {"name": "Mario Sample", "address": "Mario.Sample@Client.Example"}},
+      "sender": {"emailAddress": {"name": "Mario Sample", "address": "mario.sample@client.example"}},
+      "toRecipients": [{"emailAddress": {"name": "Marketing", "address": "marketing@example.test"}}],
+      "ccRecipients": [{"emailAddress": {"name": "Ops", "address": "ops@example.test"}}],
+      "sentDateTime": "2026-11-09T08:59:00Z",
+      "receivedDateTime": "2026-11-09T09:00:00Z",
+      "hasAttachments": false,
+      "body": {"contentType": "text", "content": "Buongiorno, serve il rinnovo entro venerdì."}
+    },
+    {
+      "id": "AAMk-2",
+      "internetMessageId": "<m2@news.example>",
+      "conversationId": "conv-2",
+      "subject": "Newsletter di novembre",
+      "from": {"emailAddress": {"name": "News", "address": "news@news.example"}},
+      "toRecipients": [{"emailAddress": {"address": "marketing@example.test"}}],
+      "ccRecipients": [],
+      "sentDateTime": "2026-11-09T07:00:00Z",
+      "receivedDateTime": "2026-11-09T07:01:00Z",
+      "hasAttachments": true,
+      "body": {"contentType": "html", "content": "<html><body><p>Ciao &amp; benvenuti</p><p>alla   newsletter</p></body></html>"}
+    }
+  ]
+}

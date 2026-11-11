@@ -1,0 +1,27 @@
+{
+  "mailboxes": [
+    {"address": "admin@example.com", "enabled": true, "digest": true},
+    {"address": "marketing@example.com", "enabled": true, "digest": true},
+    {"address": "tech@example.com", "enabled": true, "digest": true},
+    {"address": "business@example.com", "enabled": true, "digest": true},
+    {"address": "support@example.com", "enabled": true, "digest": true},
+    {"address": "legal@example.com", "enabled": true, "digest": true},
+    {"address": "person.one@example.com", "enabled": true, "digest": true},
+    {"address": "person.two@example.com", "enabled": true, "digest": true},
+    {"address": "employee.example@example.com", "enabled": true, "digest": false}
+  ],
+  "digest_recipients": ["founder@example.com", "person.two@example.com"],
+  "digest_sender": "admin@example.com",
+  "top_clients": ["client-one.example", "client-two.example"],
+  "llm": {
+    "url": "",
+    "model": "",
+    "daily_max_tokens": 2000000,
+    "confidence_threshold": 0.7
+  },
+  "poll_seconds": 180,
+  "poll_overlap_minutes": 30,
+  "workers": 4,
+  "retention_days": 365,
+  "initial_days": 90
+}

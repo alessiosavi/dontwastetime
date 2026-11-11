@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="it"><head><meta charset="utf-8"><title>Riepilogo email — {{.DateLong}}</title></head>
+<body style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:14px;color:#1f2328;max-width:760px">
+<h1 style="font-size:20px">Riepilogo email — {{.DateLong}}</h1>
+<p>Posta arrivata da {{.WindowFrom}} a {{.WindowTo}} sulle caselle seguite.</p>
+<h2 style="font-size:17px">Serve risposta ({{len .NeedsReply}})</h2>
+{{if .NeedsReply}}<ul>{{range .NeedsReply}}
+<li><b>[{{.Label}}]</b> {{.From}} — “{{.Subject}}” — in attesa da {{.Waiting}}{{if .Overdue}} <b>(oltre le {{.Threshold}})</b>{{end}} — {{.Mailbox}} — #{{.ID}}</li>{{end}}
+</ul>{{else}}<p>Nessuna conversazione in attesa di risposta.</p>{{end}}
+<h2 style="font-size:17px">Per cassetto</h2>
+{{range .Sections}}<h3 style="font-size:15px">{{.Title}} ({{.Count}})</h3><ul>{{range .Items}}
+<li>{{.From}} — “{{.Subject}}” — {{.Age}} fa — {{.Mailbox}} — #{{.ID}}{{if .Reason}} — <i>{{.Reason}}</i>{{end}}</li>{{end}}{{if .More}}
+<li>… e altre {{.More}}</li>{{end}}
+</ul>{{else}}<p>Nessuna nuova mail classificata.</p>{{end}}
+<h2 style="font-size:17px">Da classificare ({{len .Unsure}})</h2>
+{{if .Unsure}}<ul>{{range .Unsure}}
+<li>{{.From}} — “{{.Subject}}” — {{.Age}} fa — {{.Mailbox}} — #{{.ID}}{{if .Reason}} — <i>{{.Reason}}</i>{{end}}</li>{{end}}
+</ul>{{else}}<p>Niente da classificare a mano.</p>{{end}}
+<p><b>Notifiche:</b> {{.Notifications}} (solo conteggio)</p>
+<h2 style="font-size:17px">Stato del sistema</h2>
+<ul>
+<li>Caselle con problemi: {{if .Health.Degraded}}{{range $i, $d := .Health.Degraded}}{{if $i}}; {{end}}{{$d.Address}} ({{$d.Reason}}){{end}}{{else}}nessuna{{end}}</li>
+<li>Coda: {{.Health.QueuePending}} in attesa{{if .Health.QueuePending}} (la più vecchia da {{.OldestMin}} min){{end}}, {{.Health.QueueFailed}} in errore definitivo</li>
+<li>Mail in attesa di classificazione: {{.Health.Unclassified}}</li>
+<li>Budget classificatore: {{.Health.TokensUsed}} / {{.Health.TokensLimit}} token ({{.BudgetPct}}%){{if .Health.BudgetReached}} — <b>classificatore in pausa: budget giornaliero raggiunto</b>{{end}}</li>
+</ul>
+</body></html>

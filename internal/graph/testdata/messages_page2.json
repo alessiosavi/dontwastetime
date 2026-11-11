@@ -1,0 +1,16 @@
+{
+  "value": [
+    {
+      "id": "AAMk-3",
+      "internetMessageId": "<m3@vendor.example>",
+      "conversationId": "conv-3",
+      "subject": "Fattura n. 12",
+      "from": {"emailAddress": {"name": "Vendor", "address": "fatture@vendor.example"}},
+      "toRecipients": [{"emailAddress": {"address": "marketing@example.test"}}],
+      "sentDateTime": "2026-11-08T10:00:00Z",
+      "receivedDateTime": "2026-11-08T10:00:05Z",
+      "hasAttachments": true,
+      "body": {"contentType": "text", "content": "In allegato la fattura."}
+    }
+  ]
+}
