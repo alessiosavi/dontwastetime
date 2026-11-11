@@ -62,13 +62,25 @@ const lateCap = 7 * 24 * time.Hour
 // received more than 7 days before from is never listed (backfill). The
 // caller filters by the current config's digest flags; newest first.
 func (s *Store) DigestMessages(ctx context.Context, from, to time.Time) ([]DigestItem, error) {
+	return s.digestMessages(ctx, `max(m.received_at, m.first_classified_at) >= ? AND max(m.received_at, m.first_classified_at) < ?
+		AND m.received_at >= ?`, ts(from), ts(to), ts(from.Add(-lateCap)))
+}
+
+// DigestMessagesSince returns inbound mail received in [since, to) and first
+// classified before to, with no cap on late-classified mail. The caller filters
+// by the current config's digest flags; newest first.
+func (s *Store) DigestMessagesSince(ctx context.Context, since, to time.Time) ([]DigestItem, error) {
+	return s.digestMessages(ctx, `m.received_at >= ? AND m.received_at < ? AND m.first_classified_at < ?`,
+		ts(since), ts(to), ts(to))
+}
+
+func (s *Store) digestMessages(ctx context.Context, window string, args ...any) ([]DigestItem, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT m.id, m.mailbox, m.from_addr, m.from_name, m.subject, m.received_at,
 		c.label, c.rationale, c.confidence
 		FROM message m JOIN classification c ON c.message_id = m.id
 		WHERE m.direction = 'in' AND m.first_classified_at IS NOT NULL
-		AND max(m.received_at, m.first_classified_at) >= ? AND max(m.received_at, m.first_classified_at) < ?
-		AND m.received_at >= ?
-		ORDER BY m.received_at DESC, m.id DESC`, ts(from), ts(to), ts(from.Add(-lateCap)))
+		AND `+window+`
+		ORDER BY m.received_at DESC, m.id DESC`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("store: digest messages: %w", err)
 	}

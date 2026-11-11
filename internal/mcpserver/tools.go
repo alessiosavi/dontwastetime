@@ -70,7 +70,8 @@ type messageInput struct {
 }
 
 type digestInput struct {
-	Date string `json:"date,omitempty" jsonschema:"YYYY-MM-DD: today is built on demand; past dates read a saved digest or return not found. Omit for today."`
+	Date  string `json:"date,omitempty" jsonschema:"YYYY-MM-DD: today is built on demand; past dates read a saved digest or return not found. Omit for today."`
+	Since string `json:"since,omitempty" jsonschema:"YYYY-MM-DD (midnight Europe/Rome): build today's digest covering mail received since this date, e.g. the first digest of a month. Only valid for today."`
 }
 
 // The SDK's schema inference flattens tagged anonymous structs. Use a named
@@ -130,7 +131,7 @@ func registerTools(s *mcp.Server, svc *service.Service) {
 		})
 	addTool(s, "digest", "The digest as it would be built now, with the same rules as the emailed digest: personal mail and digest:false mailboxes never appear here; use list_messages or search for them. Today's preview is built without sweeping, saving or sending; past dates read saved digests. Markdown is bounded and reports trimmed.", true,
 		func(ctx context.Context, in digestInput) (digestOutput, error) {
-			r, err := svc.Digest(ctx, in.Date)
+			r, err := svc.Digest(ctx, in.Date, in.Since)
 			return digestOutput{Untrusted: r.DigestText, Built: r.Built, Trimmed: r.Trimmed}, err
 		})
 	addTool(s, "health", "Local mailbox freshness, queue, unclassified counts, daily/monthly tokens, estimated USD cost and budget state; no remote probes.", true,

@@ -36,6 +36,12 @@ type Draft struct {
 	Health   Health
 }
 
+// Options controls the digest's arrival window. Zero preserves the normal
+// working-day window and its cap on late-classified mail.
+type Options struct {
+	Since time.Time
+}
+
 // Health is the system state printed in every digest (and stored as JSON).
 type Health struct {
 	Degraded             []Degraded `json:"degraded"`
@@ -76,6 +82,7 @@ type replyRow struct {
 
 type view struct {
 	DateLong, WindowFrom, WindowTo string
+	Period                         string
 	NeedsReply                     []replyRow
 	Sections                       []section
 	Unsure                         []item
@@ -101,6 +108,12 @@ func WindowStart(at time.Time) time.Time {
 // Build assembles the digest for the instant at (normally 08:00 Rome of a
 // working day). Run threads.Sweep first so reply states are current.
 func Build(ctx context.Context, s *store.Store, cfg *config.Config, t *classify.Taxonomy, at time.Time) (*Draft, error) {
+	return BuildWithOptions(ctx, s, cfg, t, at, Options{})
+}
+
+// BuildWithOptions assembles a digest with an optional received-time lower
+// bound. Since includes older mail without the normal late-classification cap.
+func BuildWithOptions(ctx context.Context, s *store.Store, cfg *config.Config, t *classify.Taxonomy, at time.Time, opts Options) (*Draft, error) {
 	from := WindowStart(at)
 	// The current config decides which mailboxes are in the digest (the DB
 	// copy of the flags can be stale for one-shot commands).
@@ -108,12 +121,25 @@ func Build(ctx context.Context, s *store.Store, cfg *config.Config, t *classify.
 	for _, mb := range cfg.Mailboxes {
 		digestOn[mb.Address] = mb.Enabled && mb.Digest
 	}
-	all, err := s.DigestMessages(ctx, from, at)
+	var (
+		all []store.DigestItem
+		err error
+	)
+	if opts.Since.IsZero() {
+		all, err = s.DigestMessages(ctx, from, at)
+	} else {
+		from = opts.Since
+		all, err = s.DigestMessagesSince(ctx, from, at)
+	}
 	if err != nil {
 		return nil, err
 	}
 	msgs := sliceutil.Filter(all, func(d store.DigestItem) bool { return digestOn[d.Mailbox] })
 	v := view{DateLong: longDate(at), WindowFrom: shortStamp(from), WindowTo: shortStamp(at)}
+	if !opts.Since.IsZero() {
+		d := opts.Since.In(config.Rome)
+		v.Period = fmt.Sprintf("Periodo: dal %d %s %d", d.Day(), months[d.Month()-1], d.Year())
+	}
 
 	groups := sliceutil.GroupBy(msgs, func(d store.DigestItem) string { return d.Label })
 	for _, key := range t.Order {

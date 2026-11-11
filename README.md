@@ -93,6 +93,7 @@ sign-off. Re-run `explore` monthly for the first three months, or whenever
 | `dwt sync [--mailbox a] [--initial-days n]` | One sync pass (first sync reads `initial_days`, default 90). |
 | `dwt classify [--limit n]` | Drain pending classify and thread jobs once (no alerts). |
 | `dwt digest [--date YYYY-MM-DD\|today] [--dry-run]` | Build the digest for that day's 08:00 and send it, at most once per day. |
+| `dwt digest --since YYYY-MM-DD [--dry-run]` | Include mail received since midnight Europe/Rome on that date, without the seven-day late-mail cap (e.g. `--since 2026-11-01` for the first digest of November); `since` must precede the digest instant. |
 | `dwt explore [--days n] [--mailboxes a,b] [--max-messages n]` | Phase-0 clustering reports. |
 | `dwt mailboxes verify` / `discover [--write-config]` | Probe access; list the tenant's readable mailboxes (member accounts whose inbox the app can read; an alias of a configured box is not listed twice) and merge new ones into `config.json` (`digest:false`, backup in `.bak`). |
 | `dwt correct <id> <label>` | Relabel a message, save a few-shot example and recompute its thread immediately. Ids are the `#N` at the end of digest lines. |
