@@ -23,6 +23,12 @@ SQLite queue (WAL) ──► worker pool (4)
 scheduler: digest · SLA sweep every 15 min · mailbox verification hourly · body retention daily
 ```
 
+Booking, event-registration and train-ticket senders (cal.com, cal.eu,
+calendly.com, tito.io, eventbrite.com, eventbrite.it, trenitalia.it, including
+subdomains) are classified as notifications and never need a reply. Mail first
+stored more than 14 days after receipt does not open a reply obligation; a later
+fresh inbound in the same thread is tracked normally.
+
 State lives in `~/Library/Application Support/dontwastetime/` (override with
 `state_dir`, `DWT_STATE_DIR` or `--state-dir`): `dwt.db`, `digests/`,
 `reports/`, `alerts/` (dry runs) and `logs/`.
@@ -40,7 +46,11 @@ State lives in `~/Library/Application Support/dontwastetime/` (override with
      for coverage but out of the digest and alerts (employee personal boxes).
    - `digest_recipients`: the founder's address and Operator's chosen address.
      `alert_recipients` defaults to the same list.
-   - `top_clients`: the 10–20 client domains that can trigger P0 alerts.
+   - `top_clients`: the 10–20 preferred client domains that can trigger P0 alerts.
+     Earlier outbound mail in To or Cc also makes a sender a known client: exact
+     domain for business mail, exact address for common free-mail providers.
+     Inbound classification alone never establishes a known client; domains of
+     all configured mailboxes (even disabled ones) and their subdomains are excluded.
 4. `make check build`.
 
 ## First run (in this order)

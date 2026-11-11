@@ -116,6 +116,32 @@ func TestRules_TechAlertsBySender(t *testing.T) {
 	}
 }
 
+func TestRules_NotificationDomains(t *testing.T) {
+	tx := taxonomy(t)
+	for _, dom := range []string{"cal.com", "cal.eu", "calendly.com", "tito.io", "eventbrite.com", "eventbrite.it", "trenitalia.it"} {
+		for _, from := range []string{"hello@" + dom, "hello@mail." + dom, "HELLO@" + strings.ToUpper(dom)} {
+			t.Run(from, func(t *testing.T) {
+				r, ok := Rules(inbound(from, "Product demo between Operator and Mario"), nil, nil, tx)
+				if !ok || r.Label != "notifications" || r.Confidence != 0.9 || r.Method != MethodRule ||
+					r.Rationale != "mittente di notifiche automatiche "+dom {
+					t.Fatalf("notification sender: %+v ok=%v", r, ok)
+				}
+			})
+		}
+	}
+	for _, from := range []string{"hello@notcal.com", "hello@cal.com.example", "hello@nottito.io"} {
+		t.Run(from, func(t *testing.T) {
+			if r, ok := Rules(inbound(from, "Product demo"), nil, nil, tx); ok {
+				t.Fatalf("near-miss sender matched: %+v", r)
+			}
+		})
+	}
+	// Sender rules precede bulk/list headers.
+	if r, ok := Rules(inbound("hello@cal.com", "Product demo"), []graph.Header{{Name: "List-Id", Value: "bookings"}}, nil, tx); !ok || r.Label != "notifications" {
+		t.Fatalf("notification with list header: %+v ok=%v", r, ok)
+	}
+}
+
 func TestRules_AccountingKeywords(t *testing.T) {
 	tx := taxonomy(t)
 	for _, subj := range []string{"F24 da pagare entro il 16", "Registro IVA ottobre", "Chiusura mensile ottobre"} {

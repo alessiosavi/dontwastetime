@@ -115,6 +115,42 @@ func TestUpsertMessage_UpdatesChangedFields(t *testing.T) {
 	}
 }
 
+func TestHasOutboundTo_Recipients(t *testing.T) {
+	for _, tc := range []struct {
+		name, recipient, folder string
+		to, cc                  []string
+		at                      time.Time
+		want                    bool
+	}{
+		{"To domain", "partner.example", "sentitems", []string{"other@example.test", "B@PARTNER.EXAMPLE"}, nil, now0.Add(-time.Hour), true},
+		{"Cc domain", "PARTNER.EXAMPLE", "sentitems", nil, []string{"B@PARTNER.EXAMPLE"}, now0.Add(-time.Hour), true},
+		{"inbound clienti alone", "partner.example", "inbox", nil, nil, now0.Add(-time.Hour), false},
+		{"near-miss", "partner.example", "sentitems", []string{"b@notpartner.example"}, nil, now0.Add(-time.Hour), false},
+		{"subdomain", "partner.example", "sentitems", nil, []string{"b@mail.partner.example"}, now0.Add(-time.Hour), false},
+		{"exact address To", "alice@gmail.com", "sentitems", []string{"ALICE@GMAIL.COM"}, nil, now0.Add(-time.Hour), true},
+		{"exact address Cc", "ALICE@GMAIL.COM", "sentitems", nil, []string{"alice@gmail.com"}, now0.Add(-time.Hour), true},
+		{"different address", "alice@gmail.com", "sentitems", []string{"bob@gmail.com"}, nil, now0.Add(-time.Hour), false},
+		{"sent later", "partner.example", "sentitems", []string{"b@partner.example"}, nil, now0.Add(time.Hour), false},
+		{"sent at boundary", "partner.example", "sentitems", []string{"b@partner.example"}, nil, now0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := openTest(t)
+			m := msg("business@example.com", "<history@x>", tc.at)
+			m.Folder, m.From, m.To, m.CC = tc.folder, "b@partner.example", tc.to, tc.cc
+			id, _ := upsert(t, s, m)
+			if tc.folder == "inbox" {
+				if err := s.SaveClassification(context.Background(), Classification{MessageID: id, Label: "clienti", Method: "llm"}, now0); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := s.HasOutboundTo(context.Background(), tc.recipient, now0)
+			if err != nil || got != tc.want {
+				t.Fatalf("known = %v, err = %v; want %v", got, err, tc.want)
+			}
+		})
+	}
+}
+
 func TestCursor_Roundtrip(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()

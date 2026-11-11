@@ -31,7 +31,7 @@ type ThreadMessage struct {
 	Mailbox, Direction     string
 	From, Subject, Preview string
 	To, CC                 []string
-	ReceivedAt             time.Time
+	ReceivedAt, InsertedAt time.Time
 	IsAuto, IsBulk, IsList bool
 	Label                  string
 	Urgent, Negative       bool
@@ -59,7 +59,7 @@ func (s *Store) UpsertThreadFromMessage(ctx context.Context, messageID int64, no
 // ThreadMessages returns a thread's messages oldest first.
 func (s *Store) ThreadMessages(ctx context.Context, key string) ([]ThreadMessage, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT m.id, m.mailbox, m.direction, m.from_addr, m.subject,
-		coalesce(m.body_preview, ''), m.to_addrs, m.cc_addrs, m.received_at, m.is_auto, m.is_bulk, m.is_list,
+		coalesce(m.body_preview, ''), m.to_addrs, m.cc_addrs, m.received_at, m.inserted_at, m.is_auto, m.is_bulk, m.is_list,
 		coalesce(c.label, ''), coalesce(c.urgent, 0), coalesce(c.negative, 0)
 		FROM message m LEFT JOIN classification c ON c.message_id = m.id
 		WHERE m.thread_key = ? ORDER BY m.received_at, m.id`, key)
@@ -70,8 +70,8 @@ func (s *Store) ThreadMessages(ctx context.Context, key string) ([]ThreadMessage
 	var out []ThreadMessage
 	for rows.Next() {
 		var m ThreadMessage
-		var at, to, cc string
-		if err := rows.Scan(&m.ID, &m.Mailbox, &m.Direction, &m.From, &m.Subject, &m.Preview, &to, &cc, &at,
+		var at, inserted, to, cc string
+		if err := rows.Scan(&m.ID, &m.Mailbox, &m.Direction, &m.From, &m.Subject, &m.Preview, &to, &cc, &at, &inserted,
 			&m.IsAuto, &m.IsBulk, &m.IsList, &m.Label, &m.Urgent, &m.Negative); err != nil {
 			return nil, err
 		}
@@ -84,23 +84,33 @@ func (s *Store) ThreadMessages(ctx context.Context, key string) ([]ThreadMessage
 		if m.ReceivedAt, err = parseTS(at); err != nil {
 			return nil, err
 		}
+		if m.InsertedAt, err = parseTS(inserted); err != nil {
+			return nil, err
+		}
 		out = append(out, m)
 	}
 	return out, rows.Err()
 }
 
-// KnownClientDomain reports whether domain has classified `clienti` inbound
-// history received before `before`, other than message exceptID — in any
-// thread, including the current one.
-func (s *Store) KnownClientDomain(ctx context.Context, domain string, before time.Time, exceptID int64) (bool, error) {
-	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM message m JOIN classification c ON c.message_id = m.id
-		WHERE c.label = 'clienti' AND m.direction = 'in' AND m.id <> ? AND m.received_at < ? AND lower(m.from_addr) LIKE ?`,
-		exceptID, ts(before), "%@"+strings.ToLower(domain)).Scan(&n)
-	if err != nil {
-		return false, fmt.Errorf("store: known client domain: %w", err)
+// HasOutboundTo reports whether an outbound message in any thread, received
+// before `before`, addressed recipient in To or Cc. recipient is either an exact
+// domain or a full address; both comparisons are case-insensitive.
+func (s *Store) HasOutboundTo(ctx context.Context, recipient string, before time.Time) (bool, error) {
+	match := `lower(substr(value, instr(value, '@') + 1)) = ?`
+	if strings.Contains(recipient, "@") {
+		match = `lower(value) = ?`
 	}
-	return n > 0, nil
+	var known bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (
+		SELECT 1 FROM message m WHERE m.direction = 'out' AND m.received_at < ?
+		AND EXISTS (SELECT 1 FROM (
+			SELECT value FROM json_each(m.to_addrs)
+			UNION ALL SELECT value FROM json_each(m.cc_addrs)
+		) WHERE `+match+`))`, ts(before), strings.ToLower(recipient)).Scan(&known)
+	if err != nil {
+		return false, fmt.Errorf("store: outbound recipient history: %w", err)
+	}
+	return known, nil
 }
 
 const threadCols = `thread_key, mailbox, subject, last_inbound_at, last_outbound_at, last_inbound_from,
