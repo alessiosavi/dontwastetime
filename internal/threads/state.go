@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/alessiosavi/go-dontwastetime/internal/config"
@@ -45,6 +46,10 @@ var (
 	noReplyRe  = regexp.MustCompile(`(?i)^(no-?reply|do-?not-?reply|mailer-daemon|postmaster|notifications?|newsletter|bounces?)\b`)
 )
 
+// beforeSave is a test seam: when set, Recompute calls it between reading a
+// thread's messages and saving its state. Always nil in production.
+var beforeSave func()
+
 // Status is a thread's computed reply state.
 type Status struct {
 	NeedsReply bool
@@ -60,6 +65,8 @@ type Alerter func(ctx context.Context, rows []store.ThreadRow) error
 // "Ours" = sent from any tracked mailbox, or inbound from one of our own
 // domains (a colleague's answer seen in cc).
 func Recompute(ctx context.Context, s *store.Store, key string, cfg *config.Config, now time.Time) (Status, error) {
+	unlock := lockThread(key)
+	defer unlock()
 	msgs, err := s.ThreadMessages(ctx, key)
 	if err != nil {
 		return Status{}, err
@@ -68,11 +75,12 @@ func Recompute(ctx context.Context, s *store.Store, key string, cfg *config.Conf
 		return Status{}, fmt.Errorf("threads: %q has no messages", key)
 	}
 	internal := internalDomains(cfg)
+	ours := func(m *store.ThreadMessage) bool { return m.Direction == "out" || internal[domain(m.From)] }
 	var lastIn, lastOurs *store.ThreadMessage
 	cassetto := ""
 	for i := range msgs {
 		m := &msgs[i]
-		if m.Direction == "out" || internal[domain(m.From)] {
+		if ours(m) {
 			lastOurs = m
 		} else {
 			lastIn = m
@@ -81,8 +89,18 @@ func Recompute(ctx context.Context, s *store.Store, key string, cfg *config.Conf
 			cassetto = m.Label
 		}
 	}
-	if lastIn != nil && lastIn.Label != "" {
-		cassetto = lastIn.Label
+	if lastIn != nil {
+		// Only our messages that address the client's domain are replies:
+		// an internal-only discussion in the same conversation is not.
+		lastOurs = nil
+		for i := range msgs {
+			if m := &msgs[i]; ours(m) && addresses(m, domain(lastIn.From)) {
+				lastOurs = m
+			}
+		}
+		if lastIn.Label != "" {
+			cassetto = lastIn.Label
+		}
 	}
 	row, err := s.Thread(ctx, key)
 	if err != nil {
@@ -108,7 +126,7 @@ func Recompute(ctx context.Context, s *store.Store, key string, cfg *config.Conf
 		age := now.Sub(lastIn.ReceivedAt)
 		st.DueAt = lastIn.ReceivedAt.Add(threshold)
 		if cassetto == "clienti" {
-			known, err := knownClient(ctx, s, cfg, domain(lastIn.From), key)
+			known, err := knownClient(ctx, s, cfg, lastIn)
 			if err != nil {
 				return st, err
 			}
@@ -120,6 +138,9 @@ func Recompute(ctx context.Context, s *store.Store, key string, cfg *config.Conf
 	if !st.DueAt.IsZero() {
 		due := st.DueAt
 		row.ReplyDueAt = &due
+	}
+	if hook := beforeSave; hook != nil {
+		hook()
 	}
 	return st, s.SaveThreadState(ctx, row, now)
 }
@@ -145,7 +166,10 @@ func suppressed(m *store.ThreadMessage) bool {
 		pecRe.MatchString(m.Subject) || calendarRe.MatchString(m.Subject) || oofRe.MatchString(m.Subject)
 }
 
-func knownClient(ctx context.Context, s *store.Store, cfg *config.Config, dom, exceptThread string) (bool, error) {
+// knownClient: a top-clients domain, or a domain with classified clienti
+// mail received before m (any thread, the current one included).
+func knownClient(ctx context.Context, s *store.Store, cfg *config.Config, m *store.ThreadMessage) (bool, error) {
+	dom := domain(m.From)
 	if dom == "" {
 		return false, nil
 	}
@@ -154,7 +178,27 @@ func knownClient(ctx context.Context, s *store.Store, cfg *config.Config, dom, e
 			return true, nil
 		}
 	}
-	return s.KnownClientDomain(ctx, dom, exceptThread)
+	return s.KnownClientDomain(ctx, dom, m.ReceivedAt, m.ID)
+}
+
+// addresses reports whether m was sent to someone at dom.
+func addresses(m *store.ThreadMessage, dom string) bool {
+	for _, a := range append(append([]string(nil), m.To...), m.CC...) {
+		if domain(a) == dom {
+			return true
+		}
+	}
+	return false
+}
+
+// threadLocks serializes Recompute per thread so a stale snapshot can never
+// overwrite a newer one (single-process daemon).
+var threadLocks sync.Map
+
+func lockThread(key string) func() {
+	mu, _ := threadLocks.LoadOrStore(key, &sync.Mutex{})
+	mu.(*sync.Mutex).Lock()
+	return mu.(*sync.Mutex).Unlock
 }
 
 func internalDomains(cfg *config.Config) map[string]bool {
@@ -218,19 +262,28 @@ func maybeAlert(ctx context.Context, s *store.Store, cfg *config.Config, alert A
 		return err
 	}
 	day := config.Day(now)
-	if row.P0AlertedDay == day || !digestMailbox(cfg, row.Mailbox) {
+	if row.P0AlertedDay == day || !alertMailbox(cfg, row.Mailbox) {
 		return nil
 	}
+	// Claim before sending: concurrent refreshes/sweeps of the same thread
+	// must not both send. A failed send gives the claim back.
+	claimed, prev, err := s.ClaimP0Alert(ctx, key, day)
+	if err != nil || !claimed {
+		return err
+	}
+	row.P0AlertedDay = day
 	if err := alert(ctx, []store.ThreadRow{row}); err != nil {
+		_ = s.UnclaimP0Alert(context.WithoutCancel(ctx), key, prev)
 		return fmt.Errorf("threads: P0 alert for %q: %w", key, err)
 	}
-	return s.MarkP0Alerted(ctx, key, day)
+	return nil
 }
 
-func digestMailbox(cfg *config.Config, address string) bool {
+// alertMailbox: P0 alerts only for enabled mailboxes that are in the digest.
+func alertMailbox(cfg *config.Config, address string) bool {
 	for _, mb := range cfg.Mailboxes {
 		if mb.Address == address {
-			return mb.Digest
+			return mb.Enabled && mb.Digest
 		}
 	}
 	return false

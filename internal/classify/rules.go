@@ -24,17 +24,20 @@ type Result struct {
 var (
 	searchNorm = textnorm.SearchPreset()
 
-	noReplyLocal  = []string{"no-reply", "noreply", "no_reply", "do-not-reply", "donotreply", "notification", "notifiche", "notify"}
-	bounceLocal   = []string{"mailer-daemon", "postmaster"}
-	receiptWords  = []string{"ricevuta", "receipt", "conferma", "confirmation", "notifica", "notification", "ordine", "order", "pagamento", "payment"}
-	pecWords      = []string{"accettazione", "avvenuta consegna", "mancata consegna", "posta certificata", "anomalia messaggio"}
-	oofWords      = []string{"risposta automatica", "automatic reply", "auto reply", "autoreply", "out of office", "fuori ufficio", "fuori sede", "undeliverable", "non recapitabile", "delivery status notification", "mail delivery failed"}
-	invoiceWords  = []string{"fattura", "fatture", "invoice", "nota di credito", "credit note", "fattura elettronica"}
-	accountWords  = []string{"f24", "iva", "registro iva", "liquidazione iva", "chiusura", "chiusura mensile", "bilancio", "ravvedimento", "cassetto fiscale", "dichiarazione dei redditi"}
-	techDomains   = []string{"github.com", "sentry.io", "vercel.com", "amazonaws.com", "aws.amazon.com", "statuspage.io", "pagerduty.com", "uptimerobot.com", "datadoghq.com", "cloudflare.com", "supabase.io", "supabase.com"}
-	entitySRL     = regexp.MustCompile(`(?i)example[\W_]*s\.?\s?r\.?\s?l`)
-	entityLTD     = regexp.MustCompile(`(?i)example[\W_]*(ltd|limited)`)
-	entityBranch = regexp.MustCompile(`(?i)branch[\W_]*one`)
+	noReplyLocal = []string{"no-reply", "noreply", "no_reply", "do-not-reply", "donotreply", "notification", "notifiche", "notify"}
+	bounceLocal  = []string{"mailer-daemon", "postmaster"}
+	receiptWords = []string{"ricevuta", "receipt", "conferma", "confirmation", "notifica", "notification", "ordine", "order", "pagamento", "payment"}
+	pecWords     = []string{"accettazione", "avvenuta consegna", "mancata consegna", "posta certificata", "anomalia messaggio"}
+	oofWords     = []string{"risposta automatica", "automatic reply", "auto reply", "autoreply", "out of office", "fuori ufficio", "fuori sede", "undeliverable", "non recapitabile", "delivery status notification", "mail delivery failed"}
+	// Collaborator and event-venue invoices follow their own cassetto
+	// (personale.collaborators, eventi.post): never ruled as admin.invoices.
+	invoiceExceptions = []string{"prestazione", "occasionale", "evento", "eventi", "location", "venue", "catering", "allestimento"}
+	invoiceWords      = []string{"fattura", "fatture", "invoice", "nota di credito", "credit note", "fattura elettronica"}
+	accountWords      = []string{"f24", "iva", "registro iva", "liquidazione iva", "chiusura", "chiusura mensile", "bilancio", "ravvedimento", "cassetto fiscale", "dichiarazione dei redditi"}
+	techDomains       = []string{"github.com", "sentry.io", "vercel.com", "amazonaws.com", "aws.amazon.com", "statuspage.io", "pagerduty.com", "uptimerobot.com", "datadoghq.com", "cloudflare.com", "supabase.io", "supabase.com"}
+	entitySRL         = regexp.MustCompile(`(?i)example[\W_]*s\.?\s?r\.?\s?l`)
+	entityLTD         = regexp.MustCompile(`(?i)example[\W_]*(ltd|limited)`)
+	entityBranch     = regexp.MustCompile(`(?i)branch[\W_]*one`)
 )
 
 // norm is the match form of a subject: lower-case letters/digits/spaces,
@@ -104,7 +107,8 @@ func Rules(m graph.Message, headers []graph.Header, atts []graph.Attachment, t *
 	}
 
 	// Invoices: a pdf/xml attachment plus invoice words.
-	if hasInvoiceAttachment(atts) && hasWord(subj, invoiceWords) {
+	if hasInvoiceAttachment(atts) && hasWord(subj, invoiceWords) &&
+		!hasWord(subj, invoiceExceptions) && !strings.Contains(subj, " collaborat") {
 		r, _ := rule("admin.invoices", 0.9, "allegato pdf/xml e oggetto da fattura")
 		r.Entity = entity(m.Subject, atts)
 		return r, true

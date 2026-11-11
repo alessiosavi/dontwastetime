@@ -3,12 +3,14 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/alessiosavi/go-dontwastetime/internal/graph"
 	"github.com/alessiosavi/go-dontwastetime/internal/store"
 )
 
@@ -186,5 +188,26 @@ func TestPool_HandlerErrorDoesNotKillLoop(t *testing.T) {
 	_ = s.DB().QueryRow(`SELECT count(*) FROM queue WHERE attempts = 1 AND status = 'pending'`).Scan(&failedAttempts)
 	if failedAttempts != 2 {
 		t.Fatalf("error and panic should each consume one attempt: %d rows", failedAttempts)
+	}
+}
+
+func TestPool_ThrottledReleasesUntilRetryAfter(t *testing.T) {
+	s := openStore(t)
+	_ = s.Enqueue(context.Background(), "classify", 1, now0)
+	var calls atomic.Int32
+	p := NewPool(s, 1, map[string]Handler{"classify": func(context.Context, *store.Job) error {
+		calls.Add(1)
+		return fmt.Errorf("classify: headers: %w", &graph.ErrThrottled{RetryAfter: time.Hour})
+	}}, nil, (&clock{t: now0}).Now)
+	p.Idle = time.Millisecond
+	stop := runPool(t, p)
+	eventually(t, "first call", func() bool { return calls.Load() == 1 })
+	time.Sleep(20 * time.Millisecond)
+	stop()
+	var attempts int
+	var notBefore string
+	_ = s.DB().QueryRow(`SELECT attempts, not_before FROM queue`).Scan(&attempts, &notBefore)
+	if attempts != 0 || notBefore != now0.Add(time.Hour).Format("2006-01-02T15:04:05.000Z") {
+		t.Fatalf("attempts=%d not_before=%s, want 0 and now+1h", attempts, notBefore)
 	}
 }

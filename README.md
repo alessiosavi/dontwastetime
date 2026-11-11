@@ -94,8 +94,9 @@ Every command accepts `--config`, `--state-dir`, `--env` and `--taxonomy`
   When it is reached, classification pauses (jobs wait, nothing is lost) and the
   digest says so.
 - **Restarts**: ingest and enqueue are one transaction; a restart resets
-  interrupted jobs and re-enqueues every unclassified message. A digest missed
-  while the Mac slept goes out at the next start, still at most once per day.
+  interrupted jobs, clears stale leases and re-enqueues every unclassified
+  message. Digests missed while the Mac slept go out when it wakes (the 3 most
+  recent working days at most), each at most once per day.
 - **Retention**: message bodies older than `retention_days` (365) are purged
   daily; metadata stays.
 

@@ -52,7 +52,8 @@ func SaveClassificationTx(ctx context.Context, tx *sql.Tx, c Classification, now
 	if err != nil {
 		return fmt.Errorf("store: save classification %d: %w", c.MessageID, err)
 	}
-	res, err := tx.ExecContext(ctx, `UPDATE message SET classified_at = ?, classify_lease = NULL WHERE id = ?`, ts(now), c.MessageID)
+	res, err := tx.ExecContext(ctx, `UPDATE message SET classified_at = ?, first_classified_at = coalesce(first_classified_at, ?),
+		classify_lease = NULL WHERE id = ?`, ts(now), ts(now), c.MessageID)
 	if err != nil {
 		return fmt.Errorf("store: mark classified %d: %w", c.MessageID, err)
 	}

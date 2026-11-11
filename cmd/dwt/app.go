@@ -114,6 +114,11 @@ func (a *app) boot(ctx context.Context) error {
 	} else if n > 0 {
 		logger().Info("recovered jobs left running by a previous process", "jobs", n)
 	}
+	if n, err := a.s.ClearClassifyLeases(ctx); err != nil {
+		return err
+	} else if n > 0 {
+		logger().Info("cleared classify leases left by a previous process", "messages", n)
+	}
 	return a.sweepUnclassified(ctx)
 }
 

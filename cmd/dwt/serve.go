@@ -112,7 +112,7 @@ func (a *app) schedule(ctx context.Context, dryRun bool) {
 	nextDigest := nextDigestRun(now)
 	if todays := todaysRun(now); !todays.IsZero() {
 		if sent, err := a.s.DigestSent(ctx, config.Day(todays)); err == nil && !sent {
-			a.enqueueDigest(ctx, todays) // missed while down/asleep
+			_ = a.enqueueDigest(ctx, todays) // missed while down/asleep
 		}
 	}
 	nextSweep, nextVerify, nextPurge := now, now.Add(verifyEvery), now
@@ -120,10 +120,7 @@ func (a *app) schedule(ctx context.Context, dryRun bool) {
 	defer t.Stop()
 	for {
 		now = a.now()
-		if !now.Before(nextDigest) {
-			a.enqueueDigest(ctx, nextDigest)
-			nextDigest = nextDigestRun(now)
-		}
+		nextDigest = catchUpDigests(nextDigest, now, func(at time.Time) error { return a.enqueueDigest(ctx, at) })
 		if !now.Before(nextSweep) {
 			if err := threads.Sweep(ctx, a.s, a.cfg, a.alerter(dryRun), now); err != nil {
 				logger().Warn("thread sweep", "err", err)
@@ -150,10 +147,41 @@ func (a *app) schedule(ctx context.Context, dryRun bool) {
 	}
 }
 
-func (a *app) enqueueDigest(ctx context.Context, at time.Time) {
-	if err := a.s.Enqueue(ctx, pipeline.KindDigest, at.Unix(), a.now()); err != nil {
-		logger().Error("enqueue digest", "err", err)
+func (a *app) enqueueDigest(ctx context.Context, at time.Time) error {
+	err := a.s.Enqueue(ctx, pipeline.KindDigest, at.Unix(), a.now())
+	if err != nil {
+		logger().Error("enqueue digest; will retry next tick", "at", at, "err", err)
 	}
+	return err
+}
+
+// maxCatchUp bounds how many missed digests go out after a long absence
+// (only the most recent ones; older windows are skipped and logged).
+const maxCatchUp = 3
+
+// catchUpDigests enqueues every due working-day run from next up to now
+// (sleep or downtime can span several), keeping at most the latest
+// maxCatchUp. The deadline advances only past runs that were enqueued, so a
+// failed enqueue is retried on the next tick. It returns the new deadline.
+func catchUpDigests(next, now time.Time, enqueue func(time.Time) error) time.Time {
+	var due []time.Time
+	for !now.Before(next) {
+		due = append(due, next)
+		next = nextDigestRun(next)
+	}
+	if len(due) == 0 {
+		return next
+	}
+	if skip := len(due) - maxCatchUp; skip > 0 {
+		logger().Warn("skipping old missed digests", "skipped", skip, "from", due[0], "to", due[skip-1])
+		due = due[skip:]
+	}
+	for i, at := range due {
+		if err := enqueue(at); err != nil {
+			return due[i]
+		}
+	}
+	return next
 }
 
 // todaysRun is today's 08:00 Rome run if today is a working day and it is

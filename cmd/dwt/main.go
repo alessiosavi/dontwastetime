@@ -106,10 +106,10 @@ func dispatch(ctx context.Context, cmd string, args []string, stdout, stderr io.
 	mailboxes := fs.String("mailboxes", "", "explore: comma-separated mailboxes (default: all enabled)")
 	maxMessages := fs.Int("max-messages", 5000, "explore: total message cap")
 	writeConfig := fs.Bool("write-config", false, "mailboxes discover: merge found mailboxes into the config file")
-	if err := fs.Parse(args); err != nil {
+	pos, err := parseArgs(fs, args)
+	if err != nil {
 		return errUsage
 	}
-	pos := fs.Args()
 
 	n := need{}
 	switch cmd {
@@ -316,4 +316,21 @@ func splitList(s string) []string {
 		}
 	}
 	return out
+}
+
+// parseArgs parses flags anywhere on the line (`mailboxes discover
+// --write-config` and `mailboxes --write-config discover` both work) and
+// returns the positional arguments in order.
+func parseArgs(fs *flag.FlagSet, args []string) ([]string, error) {
+	var pos []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return nil, err
+		}
+		if fs.NArg() == 0 {
+			return pos, nil
+		}
+		pos = append(pos, fs.Arg(0))
+		args = fs.Args()[1:]
+	}
 }

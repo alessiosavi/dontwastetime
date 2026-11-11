@@ -139,3 +139,15 @@ func TestRules_NoMatchReturnsFalse(t *testing.T) {
 		t.Fatalf("plain client mail matched a rule: %+v", r)
 	}
 }
+
+func TestRules_InvoiceExceptionsDeferToLLM(t *testing.T) {
+	tx := taxonomy(t)
+	pdf := []graph.Attachment{{Name: "f.pdf", ContentType: "application/pdf"}}
+	for _, subj := range []string{"Fattura collaboratore Collaborator ottobre", "Fattura prestazione occasionale", "Fattura location evento 12/11", "Fattura catering evento"} {
+		m := inbound("x@vendor.example", subj)
+		m.HasAttachments = true
+		if r, ok := Rules(m, nil, pdf, tx); ok {
+			t.Errorf("%q: collaborator/venue invoices follow their own cassetto (LLM), got rule %+v", subj, r)
+		}
+	}
+}

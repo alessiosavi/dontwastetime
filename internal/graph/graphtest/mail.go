@@ -39,6 +39,8 @@ type MailFake struct {
 	Sent []SentMail
 	// HeaderCalls counts MessageHeaders requests.
 	HeaderCalls int
+	// ThrottleHeaders makes every MessageHeaders call answer 429 Retry-After: 30.
+	ThrottleHeaders bool
 }
 
 // NewMail returns an empty fake mail server and a client pointed at it.
@@ -109,6 +111,11 @@ func (f *MailFake) Handler(base func() string) http.HandlerFunc {
 		case strings.HasPrefix(rest, "/messages/"):
 			id, _ := url.PathUnescape(strings.TrimPrefix(rest, "/messages/"))
 			f.HeaderCalls++
+			if f.ThrottleHeaders {
+				w.Header().Set("Retry-After", "30")
+				w.WriteHeader(http.StatusTooManyRequests)
+				return
+			}
 			var hs []map[string]string
 			for _, h := range f.Headers[id] {
 				hs = append(hs, map[string]string{"name": h.Name, "value": h.Value})

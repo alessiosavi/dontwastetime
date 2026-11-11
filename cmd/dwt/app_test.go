@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"flag"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -86,7 +88,10 @@ func TestServe_BootSweepEnqueuesUnclassified(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	// A job left 'running' by a crash must come back too.
+	// A crash left a classify lease behind and a job 'running': both must be recovered.
+	if rows, _ := a.s.ClaimUnclassified(ctx, 10, time.Hour, now0); len(rows) != 2 {
+		t.Fatal("setup: no leases")
+	}
 	_ = a.s.Enqueue(ctx, "thread_refresh", 1, now0)
 	_, _ = a.s.Claim(ctx, nil, now0)
 	if err := a.boot(ctx); err != nil {
@@ -97,6 +102,11 @@ func TestServe_BootSweepEnqueuesUnclassified(t *testing.T) {
 	_ = a.s.DB().QueryRow(`SELECT count(*) FROM queue WHERE status='running'`).Scan(&running)
 	if classify != 2 || running != 0 {
 		t.Fatalf("after boot: %d classify jobs (want 2), %d running (want 0)", classify, running)
+	}
+	var leased int
+	_ = a.s.DB().QueryRow(`SELECT count(*) FROM message WHERE classify_lease IS NOT NULL`).Scan(&leased)
+	if leased != 0 {
+		t.Fatalf("boot kept %d stale classify leases", leased)
 	}
 }
 
@@ -186,5 +196,38 @@ func TestMuteThread_ByMessageID(t *testing.T) {
 	}
 	if row, _ := a.s.Thread(ctx, "c:T"); row.MutedAt == nil {
 		t.Fatal("thread not muted via message id")
+	}
+}
+
+func TestCatchUpDigests_EnqueuesEveryMissedWorkingDay(t *testing.T) {
+	rome := config.Rome
+	tue := time.Date(2026, 11, 10, 8, 0, 0, 0, rome)
+	wed9 := time.Date(2026, 11, 11, 9, 0, 0, 0, rome)
+	var got []time.Time
+	next := catchUpDigests(tue, wed9, func(at time.Time) error { got = append(got, at); return nil })
+	if len(got) != 2 || !got[0].Equal(tue) || !got[1].Equal(tue.AddDate(0, 0, 1)) {
+		t.Fatalf("enqueued %v, want Tue and Wed 08:00", got)
+	}
+	if !next.Equal(time.Date(2026, 11, 12, 8, 0, 0, 0, rome)) {
+		t.Fatalf("next = %v, want Thu 08:00", next)
+	}
+	// A failed enqueue keeps the deadline so the next tick retries it.
+	if next := catchUpDigests(tue, wed9, func(time.Time) error { return errors.New("busy") }); !next.Equal(tue) {
+		t.Fatalf("failed enqueue advanced the deadline to %v", next)
+	}
+	// After a long absence only the most recent runs are sent.
+	got = nil
+	catchUpDigests(tue, tue.AddDate(0, 0, 14), func(at time.Time) error { got = append(got, at); return nil })
+	if len(got) != maxCatchUp {
+		t.Fatalf("after two weeks enqueued %d digests, want %d", len(got), maxCatchUp)
+	}
+}
+
+func TestParseArgs_FlagsAfterSubcommand(t *testing.T) {
+	fs := flag.NewFlagSet("mailboxes", flag.ContinueOnError)
+	write := fs.Bool("write-config", false, "")
+	pos, err := parseArgs(fs, []string{"discover", "--write-config"})
+	if err != nil || len(pos) != 1 || pos[0] != "discover" || !*write {
+		t.Fatalf("pos=%v write=%v err=%v", pos, *write, err)
 	}
 }

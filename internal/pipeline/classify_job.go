@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/alessiosavi/GoGPUtils/sliceutil"
@@ -35,9 +36,8 @@ const (
 // job can take them; nothing is lost and nothing is classified twice.
 func ClassifyHandler(s *store.Store, c *graph.Client, l *classify.LLM, t *classify.Taxonomy, cfg *config.Config, now func() time.Time) Handler {
 	return func(ctx context.Context, job *store.Job) error {
-		if m, err := s.Message(ctx, job.Ref); err == nil && m.ClassifiedAt != nil {
-			return nil // a sibling job already did it
-		}
+		// No shortcut on job.Ref: a retry must re-claim the batch, because a
+		// sibling's own job may have completed while this job held its lease.
 		rows, err := s.ClaimUnclassified(ctx, ClassifyBatch, ClassifyLease, now())
 		if err != nil || len(rows) == 0 {
 			return err
@@ -122,13 +122,14 @@ func applyRules(ctx context.Context, s *store.Store, c *graph.Client, t *classif
 		return classify.Result{}, false, nil
 	}
 	headers, err := c.MessageHeaders(ctx, r.Mailbox, r.GraphID)
-	if err != nil && !isNotFound(err) {
-		return classify.Result{}, false, fmt.Errorf("classify: headers of message %d: %w", r.ID, err)
+	if err = degrade(ctx, r.ID, "headers", err); err != nil {
+		return classify.Result{}, false, err
 	}
 	var atts []graph.Attachment
 	if r.HasAttachments {
-		if atts, err = c.ListAttachments(ctx, r.Mailbox, r.GraphID); err != nil && !isNotFound(err) {
-			return classify.Result{}, false, fmt.Errorf("classify: attachments of message %d: %w", r.ID, err)
+		atts, err = c.ListAttachments(ctx, r.Mailbox, r.GraphID)
+		if err = degrade(ctx, r.ID, "attachments", err); err != nil {
+			return classify.Result{}, false, err
 		}
 	}
 	m := r.Graph()
@@ -140,11 +141,21 @@ func applyRules(ctx context.Context, s *store.Store, c *graph.Client, t *classif
 	return res, ok, nil
 }
 
-// isNotFound: the message moved or was deleted since ingest; classify it
-// without headers rather than failing forever.
-func isNotFound(err error) bool {
-	var he *graph.HTTPError
-	return errors.As(err, &he) && he.Status == 404
+// degrade decides what a failed header/attachment fetch means. Throttling
+// stops the batch (the pool waits for Retry-After); shutdown stops it; any
+// other failure (403 after access scoping, 404 for a moved message, a 5xx on
+// one item) classifies this message without that metadata, so one bad
+// message never blocks the others.
+func degrade(ctx context.Context, id int64, what string, err error) error {
+	var te *graph.ErrThrottled
+	switch {
+	case err == nil:
+		return nil
+	case errors.As(err, &te), ctx.Err() != nil:
+		return fmt.Errorf("classify: %s of message %d: %w", what, id, err)
+	}
+	slog.Default().Warn("classifying without "+what, "message", id, "err", err)
+	return nil
 }
 
 func toClassification(id int64, r classify.Result, t *classify.Taxonomy, cost int) store.Classification {

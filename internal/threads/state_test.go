@@ -3,6 +3,7 @@ package threads
 import (
 	"context"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -40,6 +41,7 @@ func newEnv(t *testing.T) *env {
 type mopt struct {
 	thread, mailbox, folder, from, subject, body, label string
 	at                                                  time.Time
+	to                                                  []string
 	urgent, negative, auto                              bool
 }
 
@@ -57,7 +59,7 @@ func (e *env) add(t *testing.T, o mopt) int64 {
 		o.thread = "c:T"
 	}
 	m := graph.Message{ID: "g" + string(rune('a'+e.n)), InternetMessageID: "<" + string(rune('a'+e.n)) + "@x>",
-		Mailbox: o.mailbox, Folder: o.folder, From: o.from, Subject: o.subject, BodyText: o.body, BodyPreview: o.body,
+		Mailbox: o.mailbox, Folder: o.folder, From: o.from, To: o.to, Subject: o.subject, BodyText: o.body, BodyPreview: o.body,
 		ReceivedAt: o.at}
 	id, _, err := e.s.UpsertMessage(context.Background(), m, o.thread, o.at)
 	if err != nil {
@@ -157,14 +159,14 @@ func TestNeedsReply_OtherLabelsNever(t *testing.T) {
 func TestNeedsReply_ReplyFromAnyTrackedMailboxClears(t *testing.T) {
 	e := newEnv(t)
 	e.add(t, mopt{from: "mario@client.example", subject: "Contratto", label: "clienti", at: t0})
-	e.add(t, mopt{mailbox: "person.one@example.com", folder: "sentitems", from: "person.one@example.com", subject: "Re: Contratto", label: "clienti", at: t0.Add(time.Hour)})
+	e.add(t, mopt{mailbox: "person.one@example.com", folder: "sentitems", from: "person.one@example.com", to: []string{"mario@client.example"}, subject: "Re: Contratto", label: "clienti", at: t0.Add(time.Hour)})
 	if st := e.status(t, "c:T", t0.Add(30*time.Hour)); st.NeedsReply {
 		t.Error("reply from another tracked mailbox did not clear the thread")
 	}
 	// A colleague's answer seen inbound (internal domain, cc) also counts as ours.
 	e2 := newEnv(t)
 	e2.add(t, mopt{from: "mario@client.example", subject: "Contratto", label: "clienti", at: t0})
-	e2.add(t, mopt{from: "collega@example.com", subject: "Re: Contratto", label: "clienti", at: t0.Add(time.Hour)})
+	e2.add(t, mopt{from: "collega@example.com", to: []string{"mario@client.example"}, subject: "Re: Contratto", label: "clienti", at: t0.Add(time.Hour)})
 	if st := e2.status(t, "c:T", t0.Add(30*time.Hour)); st.NeedsReply {
 		t.Error("internal colleague's reply did not clear the thread")
 	}
@@ -206,7 +208,7 @@ func TestPriority_P0NeedsKnownDomain(t *testing.T) {
 		t.Errorf("domain with clienti history: priority %q, want P0", st.Priority)
 	}
 	// Answered threads never alert.
-	e.add(t, mopt{folder: "sentitems", from: "business@example.com", subject: "Re", label: "clienti", at: t0.Add(30 * time.Minute)})
+	e.add(t, mopt{folder: "sentitems", from: "business@example.com", to: []string{"c@history.example"}, subject: "Re", label: "clienti", at: t0.Add(30 * time.Minute)})
 	if st := e.status(t, "c:T", t0.Add(time.Hour)); st.Priority == "P0" {
 		t.Error("answered thread still P0")
 	}
@@ -309,5 +311,96 @@ func TestSweep_AlertsOnSLABreach(t *testing.T) {
 	_ = Sweep(context.Background(), e.s, e.cfg, alert, t0.Add(26*time.Hour))
 	if alerts != 1 {
 		t.Fatal("sweep re-alerted the same day")
+	}
+}
+
+func TestNeedsReply_InternalOnlyMessageDoesNotClear(t *testing.T) {
+	e := newEnv(t)
+	e.add(t, mopt{from: "mario@client.example", subject: "Contratto", label: "clienti", at: t0})
+	e.add(t, mopt{folder: "sentitems", from: "business@example.com", to: []string{"boss@example.com"}, subject: "Re: Contratto", label: "clienti", at: t0.Add(time.Hour)})
+	e.add(t, mopt{from: "collega@example.com", to: []string{"business@example.com"}, subject: "Re: Contratto", label: "clienti", at: t0.Add(2 * time.Hour)})
+	if st := e.status(t, "c:T", t0.Add(30*time.Hour)); !st.NeedsReply {
+		t.Fatal("internal-only discussion cleared a client thread nobody answered")
+	}
+}
+
+func TestPriority_KnownByEarlierMessageInSameThread(t *testing.T) {
+	e := newEnv(t)
+	e.add(t, mopt{from: "a@newclient.example", subject: "Progetto", label: "clienti", at: t0.Add(-48 * time.Hour)})
+	e.add(t, mopt{folder: "sentitems", from: "business@example.com", to: []string{"a@newclient.example"}, subject: "Re: Progetto", label: "clienti", at: t0.Add(-47 * time.Hour)})
+	e.add(t, mopt{from: "a@newclient.example", subject: "Re: Progetto", body: "Serve entro oggi", label: "clienti", at: t0})
+	if st := e.status(t, "c:T", t0.Add(time.Hour)); st.Priority != PriorityP0 {
+		t.Fatalf("earlier classified client mail in the same thread makes the domain known: priority %q", st.Priority)
+	}
+}
+
+func TestRefreshHandler_NoAlertForDisabledMailbox(t *testing.T) {
+	e := newEnv(t)
+	e.cfg.Mailboxes[0].Enabled = false // business@: digest:true but disabled
+	id := e.add(t, mopt{from: "a@bigbrand.example", subject: "URGENTE", label: "clienti", at: t0})
+	alerts := 0
+	h := RefreshHandler(e.s, e.cfg, func(context.Context, []store.ThreadRow) error { alerts++; return nil },
+		func() time.Time { return t0.Add(time.Hour) })
+	if err := h(context.Background(), &store.Job{Ref: id}); err != nil {
+		t.Fatal(err)
+	}
+	if alerts != 0 {
+		t.Fatal("P0 alert for a disabled mailbox")
+	}
+}
+
+func TestRefreshHandler_ConcurrentAlertsOnce(t *testing.T) {
+	e := newEnv(t)
+	id1 := e.add(t, mopt{from: "a@bigbrand.example", subject: "URGENTE consegna", label: "clienti", at: t0})
+	id2 := e.add(t, mopt{from: "a@bigbrand.example", subject: "Re: URGENTE consegna", label: "clienti", at: t0.Add(time.Minute)})
+	var mu sync.Mutex
+	alerts := 0
+	alert := func(context.Context, []store.ThreadRow) error {
+		time.Sleep(30 * time.Millisecond) // widen the race window
+		mu.Lock()
+		alerts++
+		mu.Unlock()
+		return nil
+	}
+	h := RefreshHandler(e.s, e.cfg, alert, func() time.Time { return t0.Add(time.Hour) })
+	var wg sync.WaitGroup
+	for _, id := range []int64{id1, id2, id1, id2} {
+		wg.Go(func() {
+			if err := h(context.Background(), &store.Job{Ref: id}); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	wg.Wait()
+	if alerts != 1 {
+		t.Fatalf("concurrent refreshes sent %d alerts, want 1", alerts)
+	}
+}
+
+func TestRecompute_ConcurrentSnapshotsNeverWriteStale(t *testing.T) {
+	e := newEnv(t)
+	e.add(t, mopt{from: "mario@client.example", subject: "Contratto", label: "clienti", at: t0})
+	e.add(t, mopt{folder: "sentitems", from: "business@example.com", to: []string{"mario@client.example"}, subject: "Re", label: "clienti", at: t0.Add(time.Hour)})
+	now := t0.Add(30 * time.Hour)
+	done := make(chan struct{})
+	beforeSave = func() { // runs once, between the first recompute's read and write
+		beforeSave = nil
+		e.add(t, mopt{from: "mario@client.example", subject: "Re: Re", label: "clienti", at: t0.Add(2 * time.Hour)})
+		go func() {
+			defer close(done)
+			if _, err := Recompute(context.Background(), e.s, "c:T", e.cfg, now); err != nil {
+				t.Error(err)
+			}
+		}()
+		time.Sleep(50 * time.Millisecond)
+	}
+	defer func() { beforeSave = nil }()
+	if _, err := Recompute(context.Background(), e.s, "c:T", e.cfg, now); err != nil {
+		t.Fatal(err)
+	}
+	<-done
+	row, _ := e.s.Thread(context.Background(), "c:T")
+	if !row.NeedsReply || row.LastInboundAt == nil || !row.LastInboundAt.Equal(t0.Add(2*time.Hour)) {
+		t.Fatalf("stale snapshot overwrote the newer state: %+v", row)
 	}
 }

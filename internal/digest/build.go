@@ -101,10 +101,17 @@ func WindowStart(at time.Time) time.Time {
 // working day). Run threads.Sweep first so reply states are current.
 func Build(ctx context.Context, s *store.Store, cfg *config.Config, t *classify.Taxonomy, at time.Time) (*Draft, error) {
 	from := WindowStart(at)
-	msgs, err := s.DigestMessages(ctx, from, at)
+	// The current config decides which mailboxes are in the digest (the DB
+	// copy of the flags can be stale for one-shot commands).
+	digestOn := map[string]bool{}
+	for _, mb := range cfg.Mailboxes {
+		digestOn[mb.Address] = mb.Enabled && mb.Digest
+	}
+	all, err := s.DigestMessages(ctx, from, at)
 	if err != nil {
 		return nil, err
 	}
+	msgs := sliceutil.Filter(all, func(d store.DigestItem) bool { return digestOn[d.Mailbox] })
 	v := view{DateLong: longDate(at), WindowFrom: shortStamp(from), WindowTo: shortStamp(at)}
 
 	groups := sliceutil.GroupBy(msgs, func(d store.DigestItem) string { return d.Label })
@@ -136,10 +143,6 @@ func Build(ctx context.Context, s *store.Store, cfg *config.Config, t *classify.
 	open, err := s.ListNeedsReply(ctx)
 	if err != nil {
 		return nil, err
-	}
-	digestOn := map[string]bool{}
-	for _, mb := range cfg.Mailboxes {
-		digestOn[mb.Address] = mb.Enabled && mb.Digest
 	}
 	for _, r := range open {
 		if !digestOn[r.Mailbox] || r.LastInboundAt == nil {

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -29,6 +30,7 @@ type ThreadMessage struct {
 	ID                     int64
 	Mailbox, Direction     string
 	From, Subject, Preview string
+	To, CC                 []string
 	ReceivedAt             time.Time
 	IsAuto, IsBulk, IsList bool
 	Label                  string
@@ -57,7 +59,7 @@ func (s *Store) UpsertThreadFromMessage(ctx context.Context, messageID int64, no
 // ThreadMessages returns a thread's messages oldest first.
 func (s *Store) ThreadMessages(ctx context.Context, key string) ([]ThreadMessage, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT m.id, m.mailbox, m.direction, m.from_addr, m.subject,
-		coalesce(m.body_preview, ''), m.received_at, m.is_auto, m.is_bulk, m.is_list,
+		coalesce(m.body_preview, ''), m.to_addrs, m.cc_addrs, m.received_at, m.is_auto, m.is_bulk, m.is_list,
 		coalesce(c.label, ''), coalesce(c.urgent, 0), coalesce(c.negative, 0)
 		FROM message m LEFT JOIN classification c ON c.message_id = m.id
 		WHERE m.thread_key = ? ORDER BY m.received_at, m.id`, key)
@@ -68,9 +70,15 @@ func (s *Store) ThreadMessages(ctx context.Context, key string) ([]ThreadMessage
 	var out []ThreadMessage
 	for rows.Next() {
 		var m ThreadMessage
-		var at string
-		if err := rows.Scan(&m.ID, &m.Mailbox, &m.Direction, &m.From, &m.Subject, &m.Preview, &at,
+		var at, to, cc string
+		if err := rows.Scan(&m.ID, &m.Mailbox, &m.Direction, &m.From, &m.Subject, &m.Preview, &to, &cc, &at,
 			&m.IsAuto, &m.IsBulk, &m.IsList, &m.Label, &m.Urgent, &m.Negative); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(to), &m.To); err != nil {
+			return nil, err
+		}
+		if err := json.Unmarshal([]byte(cc), &m.CC); err != nil {
 			return nil, err
 		}
 		if m.ReceivedAt, err = parseTS(at); err != nil {
@@ -82,12 +90,13 @@ func (s *Store) ThreadMessages(ctx context.Context, key string) ([]ThreadMessage
 }
 
 // KnownClientDomain reports whether domain has classified `clienti` inbound
-// history in a thread other than exceptThread.
-func (s *Store) KnownClientDomain(ctx context.Context, domain, exceptThread string) (bool, error) {
+// history received before `before`, other than message exceptID — in any
+// thread, including the current one.
+func (s *Store) KnownClientDomain(ctx context.Context, domain string, before time.Time, exceptID int64) (bool, error) {
 	var n int
 	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM message m JOIN classification c ON c.message_id = m.id
-		WHERE c.label = 'clienti' AND m.direction = 'in' AND m.thread_key <> ? AND lower(m.from_addr) LIKE ?`,
-		exceptThread, "%@"+strings.ToLower(domain)).Scan(&n)
+		WHERE c.label = 'clienti' AND m.direction = 'in' AND m.id <> ? AND m.received_at < ? AND lower(m.from_addr) LIKE ?`,
+		exceptID, ts(before), "%@"+strings.ToLower(domain)).Scan(&n)
 	if err != nil {
 		return false, fmt.Errorf("store: known client domain: %w", err)
 	}
@@ -151,9 +160,27 @@ func nullID(id int64) any {
 	return id
 }
 
-// MarkP0Alerted records that the thread's P0 alert went out on day.
-func (s *Store) MarkP0Alerted(ctx context.Context, key, day string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE thread SET p0_alerted_day = ? WHERE thread_key = ?`, day, key)
+// ClaimP0Alert atomically marks the thread alerted for day; false means it
+// already was (by this or a concurrent refresh). prev is the marker to
+// restore with UnclaimP0Alert if the send fails.
+func (s *Store) ClaimP0Alert(ctx context.Context, key, day string) (claimed bool, prev string, err error) {
+	err = s.WithTx(ctx, func(tx *sql.Tx) error {
+		if err := tx.QueryRowContext(ctx, `SELECT p0_alerted_day FROM thread WHERE thread_key = ?`, key).Scan(&prev); err != nil {
+			return err
+		}
+		if prev == day {
+			return nil
+		}
+		_, err := tx.ExecContext(ctx, `UPDATE thread SET p0_alerted_day = ? WHERE thread_key = ?`, day, key)
+		claimed = err == nil
+		return err
+	})
+	return claimed, prev, err
+}
+
+// UnclaimP0Alert restores the marker after a failed alert send.
+func (s *Store) UnclaimP0Alert(ctx context.Context, key, prev string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE thread SET p0_alerted_day = ? WHERE thread_key = ?`, prev, key)
 	return err
 }
 

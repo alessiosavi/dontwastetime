@@ -13,11 +13,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/alessiosavi/go-dontwastetime/internal/graph"
 	"github.com/alessiosavi/go-dontwastetime/internal/store"
 )
 
 // ErrBudgetReached is returned by a handler when the daily LLM budget stops
 // it. The pool releases the job (no attempt counted) until the next window.
+// A wrapped *graph.ErrThrottled is likewise released until its Retry-After.
 var ErrBudgetReached = store.ErrBudgetReached
 
 // BudgetWindow is how long a budget-stopped job waits before the next try.
@@ -94,9 +96,13 @@ func (p *Pool) process(ctx context.Context, job *store.Job) {
 	bctx := context.WithoutCancel(ctx)
 	now := p.now()
 	var markErr error
+	var throttled *graph.ErrThrottled
 	switch {
 	case err == nil:
 		markErr = p.s.Complete(bctx, job.ID, now)
+	case errors.As(err, &throttled):
+		p.log.Info("job released: graph throttled", "job", job.ID, "kind", job.Kind, "retry_after", throttled.RetryAfter.String())
+		markErr = p.s.Release(bctx, job.ID, now.Add(throttled.RetryAfter), now)
 	case errors.Is(err, ErrBudgetReached):
 		p.log.Info("job released: llm budget reached", "job", job.ID, "kind", job.Kind)
 		markErr = p.s.Release(bctx, job.ID, now.Add(BudgetWindow), now)

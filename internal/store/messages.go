@@ -259,3 +259,14 @@ func (s *Store) ReleaseLease(ctx context.Context, ids []int64) error {
 		return nil
 	})
 }
+
+// ClearClassifyLeases drops every classify lease. Call once at boot, before
+// workers start: leases of a crashed process would otherwise hide messages
+// from the recovery jobs.
+func (s *Store) ClearClassifyLeases(ctx context.Context) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE message SET classify_lease = NULL WHERE classify_lease IS NOT NULL`)
+	if err != nil {
+		return 0, fmt.Errorf("store: clear leases: %w", err)
+	}
+	return res.RowsAffected()
+}

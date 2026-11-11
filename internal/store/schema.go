@@ -121,5 +121,10 @@ CREATE TABLE action_log (
   target       TEXT NOT NULL,
   details_json TEXT NOT NULL DEFAULT '{}'
 );
+`, // 2: first_classified_at — when a message first became visible to the
+	// digest (a later correction must not re-list it).
+	`
+ALTER TABLE message ADD COLUMN first_classified_at TEXT;
+UPDATE message SET first_classified_at = classified_at WHERE classified_at IS NOT NULL;
 `,
 }

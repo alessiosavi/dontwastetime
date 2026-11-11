@@ -3,9 +3,12 @@ package digest
 import (
 	"context"
 	"flag"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -290,5 +293,60 @@ func TestBuild_LinesCarryMessageIDs(t *testing.T) {
 	if !strings.Contains(d.Markdown, `"Rinnovo contratto 2027" — in attesa da 26 ore (oltre le 24h) — business@example.com — #1`) ||
 		!strings.Contains(d.Markdown, `"Proposta di collaborazione" — 3 ore fa — business@example.com — #2`) {
 		t.Fatalf("digest lines must carry the message id used by `dwt correct` / `dwt mute-thread`:\n%s", d.Markdown)
+	}
+}
+
+func TestBuild_LateClassifiedMailAppearsInNextDigest(t *testing.T) {
+	f := newFx(t)
+	// Received Tue 07:59 Rome, classified 08:01 — after Tuesday's 08:00 digest.
+	id := f.add(t, "business@example.com", "x@client.example", "Arrivata al limite", "", time.Minute)
+	if err := f.s.SaveClassification(context.Background(), store.Classification{MessageID: id, Label: "business.dev",
+		Confidence: 0.9, Method: "llm"}, at.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	d, err := Build(context.Background(), f.s, f.cfg, f.tx, at.Add(24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(d.Markdown, "Arrivata al limite") {
+		t.Fatalf("mail classified after its window closed never reaches a digest:\n%s", d.Markdown)
+	}
+}
+
+func TestBuild_UsesConfigDigestFlagsNotStaleDB(t *testing.T) {
+	f := newFx(t)
+	f.add(t, "legal@example.com", "x@client.example", "Riservata legale", "clienti", time.Hour)
+	cfg := *f.cfg
+	cfg.Mailboxes = append([]config.MailboxConfig(nil), f.cfg.Mailboxes...)
+	cfg.Mailboxes[1].Digest = false // owner turned legal@ off; the DB still says digest=1
+	d, err := Build(context.Background(), f.s, &cfg, f.tx, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(d.Markdown, "Riservata legale") {
+		t.Fatal("digest used the stale DB flag instead of the current config")
+	}
+}
+
+func TestSend_ConcurrentLiveSendsOnce(t *testing.T) {
+	f := seed(t)
+	var sends atomic.Int32
+	_, c := graphtest.New(t, func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(50 * time.Millisecond) // a slow Graph widens the check-then-send window
+		sends.Add(1)
+		w.WriteHeader(http.StatusAccepted)
+	})
+	d, _ := Build(context.Background(), f.s, f.cfg, f.tx, at)
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Go(func() {
+			if err := Send(context.Background(), f.s, c, f.cfg, d, false, at); err != nil {
+				t.Error(err)
+			}
+		})
+	}
+	wg.Wait()
+	if n := sends.Load(); n != 1 {
+		t.Fatalf("concurrent sends delivered %d digests, want 1", n)
 	}
 }

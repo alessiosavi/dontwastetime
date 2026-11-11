@@ -61,15 +61,15 @@ func Send(ctx context.Context, s *store.Store, c *graph.Client, cfg *config.Conf
 		}
 		return s.LogAction(ctx, "digest", "digest_dry_run", "digest:"+d.Day, map[string]any{"path": mdPath}, now)
 	}
-	sent, err := s.DigestSent(ctx, d.Day)
-	if err != nil || sent {
-		return err // already sent today: never twice
+	// Reserve the day's delivery before the network call: concurrent or
+	// repeated runs must never send twice. A failed send gives it back.
+	claimed, err := s.ClaimDigestSend(ctx, d.Day, mdPath, cfg.DigestRecipients, string(healthJSON), now)
+	if err != nil || !claimed {
+		return err // already sent (or being sent) today
 	}
 	if err := c.SendMail(ctx, cfg.DigestSender, cfg.DigestRecipients, d.Subject, d.HTML, false); err != nil {
+		_ = s.UnclaimDigestSend(context.WithoutCancel(ctx), d.Day)
 		return fmt.Errorf("digest: send: %w", err)
-	}
-	if err := s.RecordDigest(ctx, d.Day, mdPath, cfg.DigestRecipients, string(healthJSON), &now); err != nil {
-		return err
 	}
 	return s.LogAction(ctx, "digest", "digest_sent", "digest:"+d.Day,
 		map[string]any{"recipients": len(cfg.DigestRecipients)}, now)

@@ -630,6 +630,7 @@
   "from": "person.two@example.com",
   "fromName": "",
   "to": [
+   "ceo@bigbrand.example",
    "business@example.com"
   ],
   "receivedAt": "2026-11-09T08:00:00Z",

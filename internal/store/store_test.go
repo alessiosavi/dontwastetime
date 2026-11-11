@@ -283,3 +283,42 @@ func TestLogAction(t *testing.T) {
 		t.Fatalf("details = %q", details)
 	}
 }
+
+func TestRecordDigest_DryRunKeepsSentAt(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	at := now0
+	if ok, err := s.ClaimDigestSend(ctx, "2026-11-10", "/d.md", []string{"a@example.test"}, `{}`, at); err != nil || !ok {
+		t.Fatalf("first claim: %v %v", ok, err)
+	}
+	if ok, _ := s.ClaimDigestSend(ctx, "2026-11-10", "/d.md", []string{"a@example.test"}, `{}`, at); ok {
+		t.Fatal("second claim for the same day must lose")
+	}
+	if err := s.RecordDigest(ctx, "2026-11-10", "/d.md", []string{"a@example.test"}, `{}`, nil); err != nil {
+		t.Fatal(err)
+	}
+	if sent, _ := s.DigestSent(ctx, "2026-11-10"); !sent {
+		t.Fatal("a dry run erased the delivery marker")
+	}
+	if err := s.UnclaimDigestSend(ctx, "2026-11-10"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, _ := s.ClaimDigestSend(ctx, "2026-11-10", "/d.md", nil, `{}`, at); !ok {
+		t.Fatal("unclaimed (failed) send must be claimable again")
+	}
+}
+
+func TestClearClassifyLeases(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	upsert(t, s, msg("m@example.test", "<l@x>", now0))
+	if rows, _ := s.ClaimUnclassified(ctx, 10, time.Hour, now0); len(rows) != 1 {
+		t.Fatal("no lease taken")
+	}
+	if n, err := s.ClearClassifyLeases(ctx); err != nil || n != 1 {
+		t.Fatalf("cleared %d (%v)", n, err)
+	}
+	if rows, _ := s.ClaimUnclassified(ctx, 10, time.Hour, now0); len(rows) != 1 {
+		t.Fatal("message still leased after clearing")
+	}
+}

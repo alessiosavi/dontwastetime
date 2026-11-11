@@ -259,3 +259,68 @@ func TestClassifyJob_AlreadyClassifiedIsNoop(t *testing.T) {
 		t.Fatalf("re-run on a classified message: err=%v calls=%d", err, e.llm.CallCount()-before)
 	}
 }
+
+func TestClassifyJob_ForbiddenHeadersDoNotBlockBatch(t *testing.T) {
+	e := newClassifyEnv(t, llmtest.Label("clienti", 0.9))
+	e.ingest(t, synth(mbA, 3)...)
+	e.f.Forbidden[mbA] = true // access scoping landed after ingest
+	if _, err := e.runNext(t); err != nil {
+		t.Fatalf("a forbidden header fetch must not fail the batch: %v", err)
+	}
+	if n := count(t, e.s, `SELECT count(*) FROM classification`); n != 3 {
+		t.Fatalf("classified %d of 3 (classified without headers)", n)
+	}
+}
+
+func TestClassifyJob_ThrottledHeadersReleaseUntilRetryAfter(t *testing.T) {
+	e := newClassifyEnv(t, llmtest.Label("clienti", 0.9))
+	e.ingest(t, synth(mbA, 1)...)
+	e.f.ThrottleHeaders = true
+	p := NewPool(e.s, 1, map[string]Handler{KindClassify: e.h}, nil, func() time.Time { return now0 })
+	p.Idle = time.Millisecond
+	stop := runPool(t, p)
+	eventually(t, "job released", func() bool {
+		return count(t, e.s, `SELECT count(*) FROM queue WHERE kind='classify' AND status='pending' AND not_before > ?`,
+			now0.Format("2006-01-02T15:04:05.000Z")) == 1
+	})
+	stop()
+	var attempts int
+	var notBefore string
+	_ = e.s.DB().QueryRow(`SELECT attempts, not_before FROM queue WHERE kind='classify'`).Scan(&attempts, &notBefore)
+	if attempts != 0 || notBefore != now0.Add(30*time.Second).Format("2006-01-02T15:04:05.000Z") {
+		t.Fatalf("throttled job: attempts=%d not_before=%s, want 0 and now+Retry-After", attempts, notBefore)
+	}
+	if n := count(t, e.s, `SELECT count(*) FROM message WHERE classify_lease IS NOT NULL`); n != 0 {
+		t.Fatalf("throttled batch kept %d leases", n)
+	}
+}
+
+func TestClassifyJob_RetryAfterPartialBatchCoversSiblings(t *testing.T) {
+	var mu sync.Mutex
+	calls := 0
+	e := newClassifyEnv(t, func(r llmtest.Request) llmtest.Reply {
+		mu.Lock()
+		calls++
+		first := calls == 1
+		mu.Unlock()
+		if first {
+			return llmtest.Reply{Status: http.StatusInternalServerError}
+		}
+		return llmtest.Label("clienti", 0.9)(r)
+	})
+	ms := synth(mbA, 2)
+	e.f.Headers[ms[0].ID] = []graph.Header{{Name: "List-Unsubscribe", Value: "<mailto:u@x>"}} // A: rule; B: LLM
+	e.ingest(t, ms...)
+	jobA, err := e.runNext(t) // A saved by rule, B's LLM call fails
+	if err == nil {
+		t.Fatal("LLM failure must fail job A")
+	}
+	jobB, _ := e.s.Claim(context.Background(), []string{KindClassify}, now0)
+	_ = e.s.Complete(context.Background(), jobB.ID, now0)   // B's own job no-op'd while A held B's lease
+	if err := e.h(context.Background(), jobA); err != nil { // A's retry
+		t.Fatal(err)
+	}
+	if n := count(t, e.s, `SELECT count(*) FROM classification`); n != 2 {
+		t.Fatalf("A's retry left sibling B unclassified (%d/2)", n)
+	}
+}

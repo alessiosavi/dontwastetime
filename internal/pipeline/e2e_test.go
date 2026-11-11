@@ -108,7 +108,9 @@ func TestPipeline_FixtureToDigest(t *testing.T) {
 		PollSeconds: 180, PollOverlapMinutes: 30, InitialDays: 90, Workers: 1,
 		LLM: config.LLMConfig{URL: llm.URL, Model: "fake", APIKey: "k", DailyMaxTokens: 1_000_000, ConfidenceThreshold: 0.7},
 	}
-	now := func() time.Time { return digestAt }
+	// Mail is processed a minute before the 08:00 digest, as in a real run.
+	processAt := digestAt.Add(-time.Minute)
+	now := func() time.Time { return processAt }
 
 	// sync → classify → thread_refresh, all at the pinned instant.
 	if err := mailbox.SyncFromConfig(ctx, s, cfg); err != nil {
@@ -118,7 +120,7 @@ func TestPipeline_FixtureToDigest(t *testing.T) {
 	for _, mb := range cfg.Mailboxes {
 		pollers = append(pollers, pipeline.NewPoller(client, s, mb, cfg, nil))
 	}
-	if err := pipeline.SyncAll(ctx, pollers, digestAt); err != nil {
+	if err := pipeline.SyncAll(ctx, pollers, processAt); err != nil {
 		t.Fatal(err)
 	}
 	var alerted []string
@@ -133,7 +135,7 @@ func TestPipeline_FixtureToDigest(t *testing.T) {
 		pipeline.KindThreadRefresh: threads.RefreshHandler(s, cfg, alert, now),
 	}
 	for {
-		j, err := s.Claim(ctx, nil, digestAt)
+		j, err := s.Claim(ctx, nil, processAt)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -143,7 +145,7 @@ func TestPipeline_FixtureToDigest(t *testing.T) {
 		if err := handlers[j.Kind](ctx, j); err != nil {
 			t.Fatalf("job %d (%s): %v", j.ID, j.Kind, err)
 		}
-		if err := s.Complete(ctx, j.ID, digestAt); err != nil {
+		if err := s.Complete(ctx, j.ID, processAt); err != nil {
 			t.Fatal(err)
 		}
 	}
