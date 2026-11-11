@@ -335,6 +335,87 @@ func TestMailbox_UpsertPreservesRuntime(t *testing.T) {
 	}
 }
 
+func TestSetMailboxState_ProbeDoesNotStampSyncCompleted(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	mb := config.MailboxConfig{Address: "m@example.test", Enabled: true, PollSeconds: 180}
+	if err := s.UpsertMailbox(ctx, mb); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetMailboxState(ctx, mb.Address, StateOK, "", now0); err != nil {
+		t.Fatal(err)
+	}
+	var completed sql.NullString
+	var truncated bool
+	if err := s.DB().QueryRow(`SELECT last_sync_completed_at, sync_truncated FROM mailbox WHERE address = ?`, mb.Address).
+		Scan(&completed, &truncated); err != nil {
+		t.Fatal(err)
+	}
+	if completed.Valid || truncated {
+		t.Fatalf("probe changed sync freshness: completed=%+v truncated=%v", completed, truncated)
+	}
+	rows, err := s.ListMailboxes(ctx)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("ListMailboxes: %v %v", rows, err)
+	}
+	if rows[0].LastOKAt == nil || !rows[0].LastOKAt.Equal(now0) {
+		t.Fatalf("probe did not stamp last_ok_at: %+v", rows[0])
+	}
+}
+
+func TestSetSyncResult_PreservesCompletedAtUntilCleanPass(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	mb := config.MailboxConfig{Address: "m@example.test", Enabled: true, PollSeconds: 180}
+	if err := s.UpsertMailbox(ctx, mb); err != nil {
+		t.Fatal(err)
+	}
+	completedAt := now0.Add(123 * time.Millisecond).In(time.FixedZone("UTC+2", 2*60*60))
+	nextCompletedAt := now0.Add(2 * time.Hour)
+	for _, step := range []struct {
+		truncated bool
+		at        time.Time
+		completed *time.Time
+	}{
+		{true, now0, nil},
+		{false, completedAt, &completedAt},
+		{true, now0.Add(time.Hour), &completedAt},
+		{false, nextCompletedAt, &nextCompletedAt},
+	} {
+		if err := s.SetSyncResult(ctx, mb.Address, step.truncated, step.at); err != nil {
+			t.Fatal(err)
+		}
+		// Neither config refreshes nor access probes may change sync freshness.
+		if err := s.UpsertMailbox(ctx, mb); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SetMailboxState(ctx, mb.Address, StateOK, "", step.at.Add(time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		rows, err := s.ListMailboxes(ctx)
+		if err != nil || len(rows) != 1 {
+			t.Fatalf("ListMailboxes: %v %v", rows, err)
+		}
+		r := rows[0]
+		if r.SyncTruncated != step.truncated || (r.LastSyncCompletedAt == nil) != (step.completed == nil) {
+			t.Fatalf("sync result: completed=%v truncated=%v, want %v/%v", r.LastSyncCompletedAt, r.SyncTruncated, step.completed, step.truncated)
+		}
+		if step.completed != nil && !r.LastSyncCompletedAt.Equal(*step.completed) {
+			t.Fatalf("last_sync_completed_at = %v, want %v", r.LastSyncCompletedAt, *step.completed)
+		}
+		var raw sql.NullString
+		if err := s.DB().QueryRow(`SELECT last_sync_completed_at FROM mailbox WHERE address = ?`, mb.Address).Scan(&raw); err != nil {
+			t.Fatal(err)
+		}
+		if step.completed != nil && raw.String != ts(*step.completed) {
+			t.Fatalf("timestamp format = %q, want %q", raw.String, ts(*step.completed))
+		}
+	}
+	if err := s.SetSyncResult(ctx, "unknown@example.test", false, now0); err == nil {
+		t.Fatal("unknown mailbox accepted")
+	}
+}
+
 func TestUsageAdd_Today(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()

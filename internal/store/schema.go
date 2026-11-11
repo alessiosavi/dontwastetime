@@ -140,4 +140,9 @@ ALTER TABLE thread ADD COLUMN snoozed_until TEXT;
 ALTER TABLE thread ADD COLUMN ack_by TEXT NOT NULL DEFAULT '';
 ALTER TABLE thread ADD COLUMN ack_at TEXT;
 `,
+	// 5: sync freshness is independent of access probes and truncated passes.
+	`
+ALTER TABLE mailbox ADD COLUMN last_sync_completed_at TEXT;
+ALTER TABLE mailbox ADD COLUMN sync_truncated INTEGER NOT NULL DEFAULT 0;
+`,
 }
