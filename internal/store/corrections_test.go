@@ -58,7 +58,8 @@ func TestClassification_ReplyExpectedRoundtripAndCorrection(t *testing.T) {
 		s := openTest(t)
 		ctx := context.Background()
 		id, _ := upsert(t, s, msg("m@example.test", "<reply@x>", now0))
-		c := Classification{MessageID: id, Label: "accounting", Confidence: 0.9, Method: "llm", ReplyExpected: reply}
+		c := Classification{MessageID: id, Label: "accounting", Confidence: 0.9, Method: "llm",
+			Urgent: true, Negative: true, ReplyExpected: reply}
 		if err := s.SaveClassification(ctx, c, now0); err != nil {
 			t.Fatal(err)
 		}
@@ -72,6 +73,10 @@ func TestClassification_ReplyExpectedRoundtripAndCorrection(t *testing.T) {
 			if err != nil || len(messages) != 1 {
 				t.Fatalf("messages=%+v, err=%v", messages, err)
 			}
+			if cl.Urgent != c.Urgent || cl.Negative != c.Negative ||
+				messages[0].Urgent != c.Urgent || messages[0].Negative != c.Negative {
+				t.Fatalf("flags: classification=%+v, message=%+v", cl, messages[0])
+			}
 			for _, got := range []*bool{cl.ReplyExpected, messages[0].ReplyExpected} {
 				if (got == nil) != (reply == nil) || (got != nil && *got != *reply) {
 					t.Fatalf("reply_expected=%v, want %v", got, reply)
@@ -83,9 +88,10 @@ func TestClassification_ReplyExpectedRoundtripAndCorrection(t *testing.T) {
 			t.Fatal(err)
 		}
 		check()
-		// Reclassification still replaces the reply decision, including with NULL.
+		// Reclassification still replaces the flags and reply decision, including with NULL.
 		reply = nil
 		c.ReplyExpected = nil
+		c.Urgent, c.Negative = false, false
 		if err := s.SaveClassification(ctx, c, now0.Add(2*time.Hour)); err != nil {
 			t.Fatal(err)
 		}

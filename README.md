@@ -34,12 +34,13 @@ fresh inbound in the same thread is tracked normally.
 Each classification stores nullable `reply_expected` from the LLM. Suppressed
 messages (automatic, bulk/list, no-reply or receipt headers and subjects) and the
 labels `personal`, `notifications`, `marketing.news` and `tech.alerts` never open
-an obligation, whatever the model answers. For other messages, urgent or negative
-`clienti` mail always opens an obligation, even with `reply_expected:false`.
+an obligation, whatever the model answers. For other messages, `clienti` mail the
+model flags urgent or negative always opens an obligation, even with
+`reply_expected:false`.
 Otherwise, true opens an obligation and false does not. Missing or malformed
 values, rule classifications and existing rows use the tracked-label fallback.
 The SLA is the label's threshold when tracked, otherwise 48 hours.
-`dwt correct` preserves this decision.
+`dwt correct` preserves this decision and the model's urgent and negative flags.
 
 State lives in `~/Library/Application Support/dontwastetime/` (override with
 `state_dir`, `DWT_STATE_DIR` or `--state-dir`): `dwt.db`, `digests/`,

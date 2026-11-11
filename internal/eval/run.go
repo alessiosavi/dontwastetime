@@ -164,8 +164,8 @@ func Run(ctx context.Context, s *store.Store, c *graph.Client, l *classify.LLM, 
 				row.Predicted, row.Method, row.Confidence, row.Status = cl.Label, cl.Method, cl.Confidence, "classified"
 				row.Correct = slices.Contains(gold[i].Accept, cl.Label)
 				row.ReplyDecision = threads.ReplyDecision(cl.Label, &store.ThreadMessage{
-					From: m.From, Subject: m.Subject, IsAuto: m.IsAuto, IsBulk: m.IsBulk, IsList: m.IsList,
-					ReplyExpected: cl.ReplyExpected,
+					From: m.From, Subject: m.Subject, Preview: m.BodyPreview, IsAuto: m.IsAuto, IsBulk: m.IsBulk, IsList: m.IsList,
+					Urgent: cl.Urgent, Negative: cl.Negative, ReplyExpected: cl.ReplyExpected,
 				})
 			}
 			return nil
