@@ -19,6 +19,7 @@ type MessageFilter struct {
 	Mailbox, Bucket, From, Domain, Direction string
 	HasAttachments                           *bool
 	Since, Until                             *time.Time
+	UnclassifiedOnly                         bool // no classification row; applied before limits
 }
 
 // VisibleMessage includes classification metadata, empty for unclassified mail.
@@ -53,6 +54,9 @@ func visiblePredicate(v Visibility, f MessageFilter) (string, []any) {
 			clauses = append(clauses, filter.column+" = ?")
 			args = append(args, filter.value)
 		}
+	}
+	if f.UnclassifiedOnly {
+		clauses = append(clauses, "c.message_id IS NULL")
 	}
 	if f.From != "" {
 		clauses = append(clauses, "lower(m.from_addr) = ?")

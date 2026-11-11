@@ -222,8 +222,8 @@ func toItem(m store.DigestItem, at time.Time) item {
 		Reason: stringutil.Truncate(m.Rationale, reasonLen, "…")}
 }
 
-// age renders a duration in Italian: minutes, hours up to 72h, then days.
-func age(d time.Duration) string {
+// Age renders a duration in Italian: minutes, hours up to 72h, then days.
+func Age(d time.Duration) string {
 	switch {
 	case d < time.Hour:
 		return plural(int(d/time.Minute), "minuto", "minuti")
@@ -232,6 +232,8 @@ func age(d time.Duration) string {
 	}
 	return plural(int(d/(24*time.Hour)), "giorno", "giorni")
 }
+
+func age(d time.Duration) string { return Age(d) }
 
 func plural(n int, one, many string) string {
 	if n == 1 {
