@@ -274,9 +274,9 @@ func (a *app) mailboxesCmd(ctx context.Context, pos []string, cfgPath string, wr
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "found %d tenant mailboxes\n", len(found))
+	fmt.Fprintf(out, "found %d readable mailboxes\n", len(found))
 	for _, m := range missing {
-		fmt.Fprintf(out, "MISSING  %s (in config, not in the tenant)\n", m)
+		fmt.Fprintf(out, "MISSING  %s (in config, not readable: no such mailbox, or outside the app's access)\n", m)
 	}
 	if !write {
 		for _, f := range found {

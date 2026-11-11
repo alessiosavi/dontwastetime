@@ -6,17 +6,17 @@ import (
 	"strings"
 )
 
-// User is a directory user as returned by /users (needs User.Read.All).
+// User is a directory user as returned by /users. Mail is empty when the
+// credential's directory permission does not expose it.
 type User struct {
 	ID, Mail, UserPrincipalName string
-	AccountEnabled              bool
 }
 
 // ListUsers pages through /users. A 403 wraps ErrForbidden: the credential
-// lacks User.Read.All, which only gates the optional discovery helper.
+// cannot list users, which only gates the optional discovery helper.
 func (c *Client) ListUsers(ctx context.Context) ([]User, error) {
 	next := c.baseURL + "/users?" + url.Values{
-		"$select": {"id,mail,userPrincipalName,accountEnabled"},
+		"$select": {"id,mail,userPrincipalName"},
 		"$top":    {"999"},
 	}.Encode()
 	var out []User
@@ -30,14 +30,13 @@ func (c *Client) ListUsers(ctx context.Context) ([]User, error) {
 				ID                string `json:"id"`
 				Mail              string `json:"mail"`
 				UserPrincipalName string `json:"userPrincipalName"`
-				AccountEnabled    bool   `json:"accountEnabled"`
 			} `json:"value"`
 		}
 		if err := c.getJSON(ctx, next, "", nil, &resp); err != nil {
 			return nil, err
 		}
 		for _, u := range resp.Value {
-			out = append(out, User{ID: u.ID, Mail: u.Mail, UserPrincipalName: u.UserPrincipalName, AccountEnabled: u.AccountEnabled})
+			out = append(out, User{ID: u.ID, Mail: u.Mail, UserPrincipalName: u.UserPrincipalName})
 		}
 		next = resp.NextLink
 	}

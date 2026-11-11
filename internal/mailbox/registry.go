@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 	"time"
@@ -94,9 +95,15 @@ func SyncFromConfig(ctx context.Context, s *store.Store, cfg *config.Config) err
 	return s.DisableMailboxesExcept(ctx, keep)
 }
 
-// Discover lists tenant user mailboxes (enabled accounts with a mail
-// address) and reports which expected addresses were not found. Both lists
-// are lower-cased and sorted. On 403 it returns ErrDiscoveryForbidden.
+// Discover lists the tenant's readable mailboxes. Candidates are member
+// accounts (guests, #EXT#, are skipped) addressed by mail, or by user
+// principal name when mail is not visible to the credential; a candidate is
+// kept only when its inbox is readable, and a candidate whose inbox is a
+// configured address's (an alias of it) is not reported twice. found includes
+// the readable configured addresses; missing lists configured addresses that
+// are not readable (no such mailbox, or outside the access policy). A
+// throttled or failed probe aborts: a partial list would read as complete.
+// When the credential cannot list users it returns ErrDiscoveryForbidden.
 func Discover(ctx context.Context, c *graph.Client, expected []string) (found, missing []string, err error) {
 	users, err := c.ListUsers(ctx)
 	if err != nil {
@@ -105,21 +112,66 @@ func Discover(ctx context.Context, c *graph.Client, expected []string) (found, m
 		}
 		return nil, nil, fmt.Errorf("mailbox discovery: %w", err)
 	}
-	have := map[string]bool{}
-	for _, u := range users {
-		if u.AccountEnabled && u.Mail != "" {
-			have[strings.ToLower(u.Mail)] = true
+	probe := func(addr string) (id string, ok bool, err error) {
+		id, err = c.InboxID(ctx, addr)
+		switch {
+		case err == nil:
+			return id, true, nil
+		case notAMailbox(err):
+			return "", false, nil
+		default:
+			return "", false, fmt.Errorf("mailbox discovery: %s: %w", addr, err)
 		}
 	}
-	for a := range have {
-		found = append(found, a)
-	}
+	seen, inConfig := map[string]bool{}, map[string]bool{} // inbox ids reported; configured addresses
 	for _, e := range expected {
-		if e = strings.ToLower(e); !have[e] {
+		if e = strings.ToLower(e); inConfig[e] {
+			continue
+		}
+		inConfig[e] = true
+		id, ok, err := probe(e)
+		if err != nil {
+			return nil, nil, err
+		}
+		if !ok {
 			missing = append(missing, e)
+			continue
+		}
+		seen[id] = true
+		found = append(found, e)
+	}
+	var candidates []string
+	for _, u := range users {
+		if strings.Contains(u.UserPrincipalName, "#EXT#") {
+			continue
+		}
+		addr := u.Mail
+		if addr == "" {
+			addr = u.UserPrincipalName
+		}
+		if addr = strings.ToLower(addr); addr != "" && !inConfig[addr] {
+			candidates = append(candidates, addr)
+		}
+	}
+	slices.Sort(candidates)
+	for _, a := range slices.Compact(candidates) {
+		id, ok, err := probe(a)
+		if err != nil {
+			return nil, nil, err
+		}
+		if ok && !seen[id] {
+			seen[id] = true
+			found = append(found, a)
 		}
 	}
 	slices.Sort(found)
 	slices.Sort(missing)
-	return found, slices.Compact(missing), nil
+	return found, missing, nil
+}
+
+// notAMailbox: Graph answered that the address has no mailbox this credential
+// can read (no such user or mailbox, or outside the application access policy).
+func notAMailbox(err error) bool {
+	var he *graph.HTTPError
+	return errors.Is(err, graph.ErrForbidden) || (errors.As(err, &he) && he.Status == http.StatusNotFound)
 }

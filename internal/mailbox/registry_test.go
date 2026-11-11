@@ -7,10 +7,12 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/alessiosavi/go-dontwastetime/internal/config"
+	"github.com/alessiosavi/go-dontwastetime/internal/graph"
 	"github.com/alessiosavi/go-dontwastetime/internal/graph/graphtest"
 	"github.com/alessiosavi/go-dontwastetime/internal/store"
 )
@@ -93,33 +95,74 @@ func TestDiscover_ForbiddenIsTypedNotFatal(t *testing.T) {
 	}
 }
 
-func TestDiscover_ReportsMissingExpected(t *testing.T) {
+func TestDiscover_ReadableMembersAliasesAndMissing(t *testing.T) {
 	var sel string
+	var mu sync.Mutex
+	probed := map[string]bool{}
+	inbox := map[string]string{ // address → inbox id; legal@ is an alias of legal.team@
+		"admin@example.test": "IN-ADMIN", "tech@example.test": "IN-TECH",
+		"legal.team@example.test": "IN-LEGAL", "legal@example.test": "IN-LEGAL",
+	}
 	f, c := graphtest.New(t, nil)
 	f.API = func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Query().Get("$skiptoken") == "" {
-			sel = r.URL.Query().Get("$select")
-			_, _ = w.Write([]byte(`{"@odata.nextLink":"` + f.URL + `/v1.0/users?$skiptoken=2","value":[
-				{"id":"1","mail":"Admin@Example.test","userPrincipalName":"admin@example.test","accountEnabled":true},
-				{"id":"2","mail":null,"userPrincipalName":"room@example.test","accountEnabled":true}]}`))
+		mb := strings.ToLower(graphtest.Mailbox(r))
+		if mb == "" { // the /users listing
+			if r.URL.Query().Get("$skiptoken") == "" {
+				sel = r.URL.Query().Get("$select")
+				// mail is null for everyone (not visible to the credential); shared
+				// mailboxes are disabled accounts; guests carry #EXT#.
+				_, _ = w.Write([]byte(`{"@odata.nextLink":"` + f.URL + `/v1.0/users?$skiptoken=2","value":[
+					{"id":"1","mail":null,"userPrincipalName":"admin@example.test","accountEnabled":false},
+					{"id":"2","mail":null,"userPrincipalName":"room@example.test"},
+					{"id":"3","mail":null,"userPrincipalName":"x_gmail.com#EXT#@example.onmicrosoft.com"}]}`))
+				return
+			}
+			_, _ = w.Write([]byte(`{"value":[
+				{"id":"4","mail":"Tech@Example.test","userPrincipalName":"t.x@example.onmicrosoft.com"},
+				{"id":"5","mail":null,"userPrincipalName":"legal.team@example.test"}]}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"value":[
-			{"id":"3","mail":"tech@example.test","accountEnabled":true},
-			{"id":"4","mail":"gone@example.test","accountEnabled":false}]}`))
+		mu.Lock()
+		probed[mb] = true
+		mu.Unlock()
+		if id, ok := inbox[mb]; ok && strings.HasSuffix(r.URL.Path, "/mailFolders/inbox") {
+			_, _ = w.Write([]byte(`{"id":"` + id + `"}`))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"code":"MailboxNotEnabledForRESTAPI"}}`))
 	}
 	found, missing, err := Discover(context.Background(), c, []string{"admin@example.test", "legal@example.test", "gone@example.test"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(found, []string{"admin@example.test", "tech@example.test"}) {
-		t.Errorf("found = %v", found)
+	if !reflect.DeepEqual(found, []string{"admin@example.test", "legal@example.test", "tech@example.test"}) {
+		t.Errorf("found = %v (room has no mailbox, legal.team is legal@'s mailbox, guests are skipped)", found)
 	}
-	if !reflect.DeepEqual(missing, []string{"gone@example.test", "legal@example.test"}) {
+	if !reflect.DeepEqual(missing, []string{"gone@example.test"}) {
 		t.Errorf("missing = %v", missing)
 	}
-	if !strings.Contains(sel, "accountEnabled") || !strings.Contains(sel, "mail") {
+	if probed["x_gmail.com#ext#@example.onmicrosoft.com"] {
+		t.Error("guest accounts must not be probed")
+	}
+	if !strings.Contains(sel, "userPrincipalName") || !strings.Contains(sel, "mail") {
 		t.Errorf("$select = %q", sel)
+	}
+}
+
+func TestDiscover_ThrottledProbeAborts(t *testing.T) {
+	_, c := graphtest.New(t, func(w http.ResponseWriter, r *http.Request) {
+		if graphtest.Mailbox(r) == "" {
+			_, _ = w.Write([]byte(`{"value":[{"id":"1","userPrincipalName":"a@example.test"}]}`))
+			return
+		}
+		w.Header().Set("Retry-After", "5")
+		w.WriteHeader(http.StatusTooManyRequests)
+	})
+	found, _, err := Discover(context.Background(), c, nil)
+	var te *graph.ErrThrottled
+	if !errors.As(err, &te) || found != nil {
+		t.Fatalf("found=%v err=%v; want no partial list and *ErrThrottled", found, err)
 	}
 }
 

@@ -48,7 +48,7 @@ State lives in `~/Library/Application Support/dontwastetime/` (override with
 ```bash
 ./bin/dwt doctor                                   # everything green?
 ./bin/dwt mailboxes verify                         # every mailbox readable?
-./bin/dwt mailboxes discover                       # optional: needs User.Read.All
+./bin/dwt mailboxes discover                       # list readable tenant mailboxes (no changes)
 ./bin/dwt sync --mailbox marketing@example.com       # first small real sync
 ./bin/dwt explore --days 90 --mailboxes marketing@example.com,tech@example.com,business@example.com
 #   read the reports in <state>/reports/, then admin@ and the personal boxes;
@@ -71,7 +71,7 @@ sign-off. Re-run `explore` monthly for the first three months, or whenever
 | `dwt classify [--limit n]` | Drain pending classify and thread jobs once (no alerts). |
 | `dwt digest [--date YYYY-MM-DD\|today] [--dry-run]` | Build the digest for that day's 08:00 and send it, at most once per day. |
 | `dwt explore [--days n] [--mailboxes a,b] [--max-messages n]` | Phase-0 clustering reports. |
-| `dwt mailboxes verify` / `discover [--write-config]` | Probe access; list tenant mailboxes and merge new ones into `config.json` (`digest:false`, backup in `.bak`). |
+| `dwt mailboxes verify` / `discover [--write-config]` | Probe access; list the tenant's readable mailboxes (member accounts whose inbox the app can read; an alias of a configured box is not listed twice) and merge new ones into `config.json` (`digest:false`, backup in `.bak`). |
 | `dwt correct <id> <label>` | Relabel a message. Ids are the `#N` at the end of digest lines; corrections become few-shot examples. |
 | `dwt mute-thread <id>` | Silence a thread resolved off-mail (message `#N` or thread key). |
 | `dwt doctor` | Config, credential, per-mailbox access, queue, dead-letters, budget, unsure share, disk. Exits non-zero on any red item. |
