@@ -173,9 +173,10 @@ func priority(m *store.ThreadMessage, known bool, age time.Duration) string {
 }
 
 // ReplyDecision reports whether an unanswered thread with this latest inbound
-// expects a reply. After suppression and label exclusions, urgent or negative
-// clienti mail always expects a reply. Timing, backlog, mute and known-client
-// policy are excluded so evaluation can measure the classification's reply decision.
+// expects a reply. After suppression and label exclusions, clienti mail always
+// expects a reply when the model flags it urgent or negative. Timing, backlog,
+// mute and known-client policy are excluded so evaluation can measure the
+// classification's reply decision.
 func ReplyDecision(label string, m *store.ThreadMessage) bool {
 	if m == nil || suppressed(m) {
 		return false
@@ -183,7 +184,7 @@ func ReplyDecision(label string, m *store.ThreadMessage) bool {
 	if _, excluded := neverReplyLabels[label]; excluded {
 		return false
 	}
-	if label == "clienti" && (m.Urgent || m.Negative || urgencyRe.MatchString(m.Subject+" "+m.Preview)) {
+	if label == "clienti" && (m.Urgent || m.Negative) {
 		return true
 	}
 	if m.ReplyExpected != nil {

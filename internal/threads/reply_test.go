@@ -92,10 +92,10 @@ func TestRefreshHandler_ClientiReplyExpectedFalse(t *testing.T) {
 		msg    mopt
 		wantP0 bool
 	}{
-		{"urgent subject", mopt{label: "clienti", subject: "URGENTE consegna"}, true},
-		{"urgent preview", mopt{label: "clienti", subject: "Consegna", body: "Serve entro domani"}, true},
-		{"urgent flag", mopt{label: "clienti", subject: "Consegna", urgent: true}, true},
-		{"negative flag", mopt{label: "clienti", subject: "Consegna", negative: true}, true},
+		{"inherited urgent subject", mopt{label: "clienti", subject: "Re: URGENTE consegna — grazie, ricevuto"}, false},
+		{"urgent preview", mopt{label: "clienti", subject: "Consegna", body: "Serve entro domani"}, false},
+		{"urgent flag", mopt{label: "clienti", subject: "Re: URGENTE consegna — grazie, ricevuto", urgent: true}, true},
+		{"negative flag", mopt{label: "clienti", subject: "Re: URGENTE consegna — grazie, ricevuto", negative: true}, true},
 		{"thanks received", mopt{label: "clienti", subject: "Grazie, ricevuto"}, false},
 		{"suppressed", mopt{label: "clienti", subject: "URGENTE consegna", negative: true, auto: true}, false},
 		{"personal", mopt{label: "personal", subject: "URGENTE consegna", negative: true}, false},
@@ -145,6 +145,41 @@ func TestRefreshHandler_ClientiReplyExpectedFalse(t *testing.T) {
 			}
 			if alerts != wantAlerts {
 				t.Errorf("alerts on the same day = %d, want %d", alerts, wantAlerts)
+			}
+		})
+	}
+}
+
+func TestRecompute_CorrectionPreservesClientiFlags(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		urgent, negative bool
+	}{
+		{"urgent", true, false},
+		{"negative", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newEnv(t)
+			ctx := context.Background()
+			id := e.add(t, mopt{from: "a@bigbrand.example", subject: "Consegna", label: "clienti", at: t0,
+				urgent: tc.urgent, negative: tc.negative, replyExpected: new(false)})
+			if st := e.status(t, "c:T", t0.Add(time.Hour)); !st.NeedsReply || st.Priority != PriorityP0 {
+				t.Fatalf("initial obligation: %+v", st)
+			}
+			if err := e.s.AddCorrection(ctx, id, "clienti", "clienti", "cli", t0.Add(time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+			cl, err := e.s.ClassificationOf(ctx, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if cl.Method != "correction" || cl.Urgent != tc.urgent || cl.Negative != tc.negative ||
+				cl.ReplyExpected == nil || *cl.ReplyExpected {
+				t.Fatalf("correction lost reply flags: %+v", cl)
+			}
+			if st := e.status(t, "c:T", t0.Add(2*time.Hour)); !st.NeedsReply || st.Priority != PriorityP0 ||
+				!st.DueAt.Equal(t0.Add(24*time.Hour)) {
+				t.Fatalf("correction lost obligation: %+v", st)
 			}
 		})
 	}
@@ -216,7 +251,7 @@ func TestRecompute_ReplyExpectedSLA(t *testing.T) {
 				t.Fatalf("SLA elapsed: %+v", st)
 			}
 			// A new inbound can close the conversation without an outbound.
-			e.add(t, mopt{from: "person@unknown.example", subject: "Grazie, risolto", label: tc.label, at: t0.Add(time.Hour), replyExpected: new(false)})
+			e.add(t, mopt{from: "person@unknown.example", subject: "Re: URGENTE consegna — grazie, ricevuto", label: tc.label, at: t0.Add(time.Hour), replyExpected: new(false)})
 			if st = e.status(t, "c:T", t0.Add(100*time.Hour)); st.NeedsReply || !st.DueAt.IsZero() {
 				t.Fatalf("closing inbound reopened obligation: %+v", st)
 			}

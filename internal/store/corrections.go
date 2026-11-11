@@ -45,7 +45,10 @@ func SaveClassificationTx(ctx context.Context, tx *sql.Tx, c Classification, now
 	_, err := tx.ExecContext(ctx, `INSERT INTO classification(message_id, label, entity, confidence, urgent, negative,
 		method, model, rationale, cost_tokens, classified_at, taxonomy_version, reply_expected) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(message_id) DO UPDATE SET label = excluded.label, entity = excluded.entity,
-		confidence = excluded.confidence, urgent = excluded.urgent, negative = excluded.negative, method = excluded.method,
+		confidence = excluded.confidence,
+		urgent = CASE WHEN excluded.method = 'correction' THEN classification.urgent ELSE excluded.urgent END,
+		negative = CASE WHEN excluded.method = 'correction' THEN classification.negative ELSE excluded.negative END,
+		method = excluded.method,
 		model = excluded.model, rationale = excluded.rationale, cost_tokens = excluded.cost_tokens,
 		classified_at = excluded.classified_at, taxonomy_version = excluded.taxonomy_version,
 		reply_expected = CASE WHEN excluded.method = 'correction' THEN classification.reply_expected ELSE excluded.reply_expected END`,

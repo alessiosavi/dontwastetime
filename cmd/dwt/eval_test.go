@@ -17,6 +17,7 @@ import (
 	"github.com/alessiosavi/go-dontwastetime/internal/classify"
 	"github.com/alessiosavi/go-dontwastetime/internal/classify/llmtest"
 	"github.com/alessiosavi/go-dontwastetime/internal/config"
+	"github.com/alessiosavi/go-dontwastetime/internal/eval"
 	"github.com/alessiosavi/go-dontwastetime/internal/graph"
 	"github.com/alessiosavi/go-dontwastetime/internal/graph/graphtest"
 	"github.com/alessiosavi/go-dontwastetime/internal/store"
@@ -90,6 +91,42 @@ func TestEvalRun_ReplyExpectedAndBulkSuppression(t *testing.T) {
 	}
 	if !reflect.DeepEqual(before, evalSnapshot(t, a.s)) {
 		t.Fatal("eval wrote production state")
+	}
+}
+
+func TestEvalRun_ClientiFlagsOverride(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		urgent, negative bool
+		wantReply        bool
+	}{
+		{"neither", false, false, false},
+		{"urgent", true, false, true},
+		{"negative", false, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a, _, llm := evalFixture(t, func(r llmtest.Request) llmtest.Reply {
+				return llmtest.Reply{Content: llmtest.Results(llmtest.Answer{
+					ID: r.Items[0].ID, Label: "clienti", Confidence: 0.9,
+					Urgent: tc.urgent, Negative: tc.negative, ReplyExpected: new(false),
+				}), In: 100, Out: 20}
+			})
+			evalMessage(t, a, 1, "a@example.com")
+			r, err := eval.Run(context.Background(), a.s, a.c, a.llm, a.tx, a.cfg, []eval.Gold{{
+				N: 1, Mailbox: "a@example.com", InternetMessageID: "<1@secret.example>",
+				Accept: []string{"clienti"}, NeedsReply: tc.wantReply,
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if llm.CallCount() != 1 || len(r.Rows) != 1 {
+				t.Fatalf("LLM calls=%d, rows=%+v", llm.CallCount(), r.Rows)
+			}
+			row := r.Rows[0]
+			if row.Status != "classified" || row.Method != "llm" || row.Predicted != "clienti" || row.ReplyDecision != tc.wantReply {
+				t.Fatalf("row=%+v, want reply_decision=%v", row, tc.wantReply)
+			}
+		})
 	}
 }
 
