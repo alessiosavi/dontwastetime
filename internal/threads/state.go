@@ -86,6 +86,40 @@ func Recompute(ctx context.Context, s *store.Store, key string, cfg *config.Conf
 	return st, err
 }
 
+// Triage applies an audited change and recomputes in one immediate transaction,
+// serializing with recomputes and triage actions in every process.
+func Triage(ctx context.Context, s *store.Store, cfg *config.Config, key string, now time.Time, change func(tx *sql.Tx) error) (Status, error) {
+	var st Status
+	err := s.WithTx(ctx, func(tx *sql.Tx) error {
+		if err := change(tx); err != nil {
+			return err
+		}
+		var err error
+		st, err = RecomputeTx(ctx, tx, key, cfg, now)
+		return err
+	})
+	return st, err
+}
+
+// StateOf names the persisted state at now. Sweeps refresh time-driven reply
+// eligibility; needs_reply means overdue or P0, rather than every obligation.
+func StateOf(r store.ThreadRow, now time.Time) string {
+	switch {
+	case r.MutedAt != nil:
+		return "muted"
+	case r.AckKind == "handled":
+		return "handled"
+	case r.AckKind == "snoozed" && r.SnoozedUntil != nil && now.Before(*r.SnoozedUntil):
+		return "snoozed"
+	case r.ReplyDueAt == nil:
+		return "none"
+	case r.NeedsReply:
+		return "overdue"
+	default:
+		return "due"
+	}
+}
+
 // RecomputeTx derives and stores a thread's state inside the caller's immediate
 // transaction. It performs no network calls or alert delivery.
 func RecomputeTx(ctx context.Context, tx *sql.Tx, key string, cfg *config.Config, now time.Time) (Status, error) {
@@ -126,6 +160,9 @@ func RecomputeTx(ctx context.Context, tx *sql.Tx, key string, cfg *config.Config
 	}
 	row, err := store.ThreadTx(ctx, tx, key)
 	if err != nil {
+		if !errors.Is(err, sql.ErrNoRows) {
+			return Status{}, err
+		}
 		row = store.ThreadRow{ThreadKey: key}
 	}
 	latest := msgs[len(msgs)-1]
@@ -158,6 +195,24 @@ func RecomputeTx(ctx context.Context, tx *sql.Tx, key string, cfg *config.Config
 			st.Priority = priority(lastIn, known, age)
 		}
 		st.NeedsReply = age >= threshold || st.Priority == PriorityP0
+	}
+	if row.AckKind != "" {
+		covered := lastIn != nil && row.AckInboundAt != nil &&
+			(lastIn.ReceivedAt.Before(*row.AckInboundAt) ||
+				(lastIn.ReceivedAt.Equal(*row.AckInboundAt) && lastIn.InternetMessageID == row.AckInboundIMID))
+		switch {
+		case covered && row.AckKind == "handled":
+			st.NeedsReply, st.DueAt, st.Priority = false, time.Time{}, ""
+		case covered && row.AckKind == "snoozed" && row.SnoozedUntil != nil && now.Before(*row.SnoozedUntil):
+			st.NeedsReply, st.DueAt, st.Priority = false, time.Time{}, ""
+			if row.ReplyDueAt != nil {
+				st.DueAt = *row.ReplyDueAt
+			}
+		default:
+			if err := store.ClearAckTx(ctx, tx, key); err != nil {
+				return st, err
+			}
+		}
 	}
 	row.NeedsReply, row.Priority, row.ReplyDueAt = st.NeedsReply, st.Priority, nil
 	if !st.DueAt.IsZero() {
@@ -294,11 +349,10 @@ func RefreshHandler(s *store.Store, cfg *config.Config, alert Alerter, now func(
 	}
 }
 
-// Sweep recomputes every open thread of the last 30 days, so time-driven
-// changes (SLA breach, pinning) happen without a new message, and alerts
-// new P0s. Run it periodically and before each digest.
+// Sweep recomputes open threads of the last 30 days and expired snoozes of any
+// age, so time-driven changes happen without new mail. Run before each digest.
 func Sweep(ctx context.Context, s *store.Store, cfg *config.Config, alert Alerter, now time.Time) error {
-	rows, err := s.OpenThreads(ctx, now.Add(-sweepWindow))
+	rows, err := s.OpenThreads(ctx, now.Add(-sweepWindow), now)
 	if err != nil {
 		return err
 	}

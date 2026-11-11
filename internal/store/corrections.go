@@ -134,14 +134,16 @@ func (s *Store) RecentCorrections(ctx context.Context, n int) ([]Correction, err
 // MuteThread silences a thread's needs-reply flag (resolved off-mail).
 func (s *Store) MuteThread(ctx context.Context, threadKey, by string, now time.Time) error {
 	return s.WithTx(ctx, func(tx *sql.Tx) error {
-		res, err := tx.ExecContext(ctx, `UPDATE thread SET muted_at = ?, muted_by = ?, needs_reply = 0 WHERE thread_key = ?`,
-			ts(now), by, threadKey)
-		if err != nil {
-			return fmt.Errorf("store: mute thread: %w", err)
-		}
-		if n, _ := res.RowsAffected(); n != 1 {
-			return fmt.Errorf("store: mute thread: unknown thread %q", threadKey)
-		}
-		return logActionTx(ctx, tx, by, "mute_thread", "thread:"+threadKey, nil, now)
+		return MuteThreadTx(ctx, tx, threadKey, by, now)
 	})
+}
+
+// MuteThreadTx is MuteThread inside the caller's transaction.
+func MuteThreadTx(ctx context.Context, tx *sql.Tx, key, by string, now time.Time) error {
+	res, err := tx.ExecContext(ctx, `UPDATE thread SET muted_at = ?, muted_by = ?, needs_reply = 0 WHERE thread_key = ?`,
+		ts(now), by, key)
+	if err := threadUpdated(res, err, key); err != nil {
+		return err
+	}
+	return logActionTx(ctx, tx, by, "mute_thread", "thread:"+key, nil, now)
 }

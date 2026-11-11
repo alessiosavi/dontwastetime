@@ -109,10 +109,59 @@ func TestOpen_ReplyExpectedMigrationLeavesExistingRowsNull(t *testing.T) {
 			t.Fatalf("legacy reply=%+v, err=%v", reply, err)
 		}
 		var version int
-		if err := s.DB().QueryRow("SELECT max(version) FROM schema_version").Scan(&version); err != nil || version != 3 {
+		if err := s.DB().QueryRow("SELECT max(version) FROM schema_version").Scan(&version); err != nil || version != len(migrations) {
 			t.Fatalf("schema version=%d, err=%v", version, err)
 		}
 		s.Close()
+	}
+}
+
+func TestOpen_TriageMigrationKeepsExistingThreads(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "old.db")
+	db, err := sql.Open("sqlite", p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if _, err := db.Exec("CREATE TABLE schema_version (version INTEGER PRIMARY KEY)"); err != nil {
+		t.Fatal(err)
+	}
+	for i, ddl := range migrations[:3] {
+		if _, err := db.Exec(ddl); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec("INSERT INTO schema_version VALUES (?)", i+1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO thread(thread_key, mailbox, subject, needs_reply, reply_due_at, priority)
+		VALUES ('c:old', 'm@example.test', 'Existing thread', 1, ?, 'P0')`, ts(now0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		s, err := Open(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var subject, priority, kind, imid, by string
+		var needs bool
+		var due, inbound, until, at sql.NullString
+		err = s.DB().QueryRow(`SELECT subject, needs_reply, reply_due_at, priority,
+			ack_kind, ack_inbound_at, ack_inbound_imid, snoozed_until, ack_by, ack_at
+			FROM thread WHERE thread_key = 'c:old'`).Scan(&subject, &needs, &due, &priority,
+			&kind, &inbound, &imid, &until, &by, &at)
+		s.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if subject != "Existing thread" || !needs || due.String != ts(now0) || priority != "P0" ||
+			kind != "" || imid != "" || by != "" || inbound.Valid || until.Valid || at.Valid {
+			t.Fatalf("migration changed old state or nonempty ack: subject=%q needs=%v due=%v priority=%q kind=%q inbound=%v imid=%q until=%v by=%q at=%v",
+				subject, needs, due, priority, kind, inbound, imid, until, by, at)
+		}
 	}
 }
 
