@@ -29,6 +29,8 @@ const (
 	clientSLA   = 24 * time.Hour
 	pinAfter    = 7 * 24 * time.Hour
 	sweepWindow = 30 * 24 * time.Hour
+	// Backfills and long outages must not open reply obligations for stale mail.
+	backlogAge = 14 * 24 * time.Hour
 )
 
 // thresholds: labels that expect a reply. Every other label: never.
@@ -122,7 +124,7 @@ func Recompute(ctx context.Context, s *store.Store, key string, cfg *config.Conf
 	st := Status{Cassetto: cassetto}
 	threshold, tracked := thresholds[cassetto]
 	open := lastIn != nil && (lastOurs == nil || lastOurs.ReceivedAt.Before(lastIn.ReceivedAt)) &&
-		!suppressed(lastIn) && row.MutedAt == nil
+		lastIn.InsertedAt.Sub(lastIn.ReceivedAt) <= backlogAge && !suppressed(lastIn) && row.MutedAt == nil
 	if open && tracked {
 		age := now.Sub(lastIn.ReceivedAt)
 		st.DueAt = lastIn.ReceivedAt.Add(threshold)
@@ -167,19 +169,34 @@ func suppressed(m *store.ThreadMessage) bool {
 		pecRe.MatchString(m.Subject) || calendarRe.MatchString(m.Subject) || oofRe.MatchString(m.Subject)
 }
 
-// knownClient: a top-clients domain, or a domain with classified clienti
-// mail received before m (any thread, the current one included).
+// knownClient excludes domains of all configured mailboxes (even disabled ones)
+// and their subdomains. Otherwise, a top-clients domain or a sender we addressed
+// in an outbound message before m (any thread) is known. History matches exact
+// domains, except for free-mail providers where only the exact sender counts.
 func knownClient(ctx context.Context, s *store.Store, cfg *config.Config, m *store.ThreadMessage) (bool, error) {
 	dom := domain(m.From)
 	if dom == "" {
 		return false, nil
+	}
+	for _, mb := range cfg.Mailboxes {
+		d := domain(mb.Address)
+		if dom == d || strings.HasSuffix(dom, "."+d) {
+			return false, nil
+		}
 	}
 	for _, d := range cfg.TopClients {
 		if dom == d || strings.HasSuffix(dom, "."+d) {
 			return true, nil
 		}
 	}
-	return s.KnownClientDomain(ctx, dom, m.ReceivedAt, m.ID)
+	recipient := dom
+	switch dom {
+	case "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "hotmail.it", "live.com", "live.it",
+		"yahoo.com", "yahoo.it", "icloud.com", "me.com", "libero.it", "virgilio.it", "tiscali.it", "alice.it",
+		"proton.me", "protonmail.com":
+		recipient = m.From
+	}
+	return s.HasOutboundTo(ctx, recipient, m.ReceivedAt)
 }
 
 // addresses reports whether m was sent to someone at dom.

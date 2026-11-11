@@ -31,13 +31,14 @@ var (
 	oofWords     = []string{"risposta automatica", "automatic reply", "auto reply", "autoreply", "out of office", "fuori ufficio", "fuori sede", "undeliverable", "non recapitabile", "delivery status notification", "mail delivery failed"}
 	// Collaborator and event-venue invoices follow their own cassetto
 	// (personale.collaborators, eventi.post): never ruled as admin.invoices.
-	invoiceExceptions = []string{"prestazione", "occasionale", "evento", "eventi", "location", "venue", "catering", "allestimento"}
-	invoiceWords      = []string{"fattura", "fatture", "invoice", "nota di credito", "credit note", "fattura elettronica"}
-	accountWords      = []string{"f24", "iva", "registro iva", "liquidazione iva", "chiusura", "chiusura mensile", "bilancio", "ravvedimento", "cassetto fiscale", "dichiarazione dei redditi"}
-	techDomains       = []string{"github.com", "sentry.io", "vercel.com", "amazonaws.com", "aws.amazon.com", "statuspage.io", "pagerduty.com", "uptimerobot.com", "datadoghq.com", "cloudflare.com", "supabase.io", "supabase.com"}
-	entitySRL         = regexp.MustCompile(`(?i)example[\W_]*s\.?\s?r\.?\s?l`)
-	entityLTD         = regexp.MustCompile(`(?i)example[\W_]*(ltd|limited)`)
-	entityBranch     = regexp.MustCompile(`(?i)branch[\W_]*one`)
+	invoiceExceptions   = []string{"prestazione", "occasionale", "evento", "eventi", "location", "venue", "catering", "allestimento"}
+	invoiceWords        = []string{"fattura", "fatture", "invoice", "nota di credito", "credit note", "fattura elettronica"}
+	accountWords        = []string{"f24", "iva", "registro iva", "liquidazione iva", "chiusura", "chiusura mensile", "bilancio", "ravvedimento", "cassetto fiscale", "dichiarazione dei redditi"}
+	techDomains         = []string{"github.com", "sentry.io", "vercel.com", "amazonaws.com", "aws.amazon.com", "statuspage.io", "pagerduty.com", "uptimerobot.com", "datadoghq.com", "cloudflare.com", "supabase.io", "supabase.com"}
+	notificationDomains = []string{"cal.com", "cal.eu", "calendly.com", "tito.io", "eventbrite.com", "eventbrite.it", "trenitalia.it"}
+	entitySRL           = regexp.MustCompile(`(?i)example[\W_]*s\.?\s?r\.?\s?l`)
+	entityLTD           = regexp.MustCompile(`(?i)example[\W_]*(ltd|limited)`)
+	entityBranch       = regexp.MustCompile(`(?i)branch[\W_]*one`)
 )
 
 // norm is the match form of a subject: lower-case letters/digits/spaces,
@@ -83,7 +84,7 @@ func rule(label string, conf float64, why string) (Result, bool) {
 }
 
 // Rules applies the deterministic families in order: automatic/bounce/PEC
-// receipts, invoice attachments, tech senders, bulk/list headers, no-reply
+// receipts, invoice attachments, tech and notification senders, bulk/list headers, no-reply
 // receipts, accounting keywords. ok=false means "ask the LLM".
 func Rules(m graph.Message, headers []graph.Header, atts []graph.Attachment, t *Taxonomy) (Result, bool) {
 	subj := norm(m.Subject)
@@ -118,6 +119,13 @@ func Rules(m graph.Message, headers []graph.Header, atts []graph.Attachment, t *
 	for _, d := range techDomains {
 		if dom == d || strings.HasSuffix(dom, "."+d) {
 			return rule("tech.alerts", 0.9, "mittente tecnico "+d)
+		}
+	}
+
+	// Automatic notifications by sender domain.
+	for _, d := range notificationDomains {
+		if dom == d || strings.HasSuffix(dom, "."+d) {
+			return rule("notifications", 0.9, "mittente di notifiche automatiche "+d)
 		}
 	}
 
