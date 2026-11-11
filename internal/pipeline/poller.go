@@ -19,8 +19,8 @@ import (
 
 // Job kinds.
 const (
-	KindClassify      = "classify"
-	KindThreadRefresh = "thread_refresh"
+	KindClassify      = store.KindClassify
+	KindThreadRefresh = store.KindThreadRefresh
 	KindDigest        = "digest"
 )
 
@@ -52,10 +52,12 @@ func (p *Poller) Mailbox() string { return p.mb.Address }
 // days on a first run), stores each message and its classify job in one
 // transaction, and advances a folder's cursor only after all of that
 // folder's messages committed. Any error leaves the cursor where it was and
-// marks the mailbox degraded; success marks it ok.
+// marks the mailbox degraded; success marks it ok and records whether any
+// folder hit its page cap. Only an uncapped pass stamps sync completion.
 func (p *Poller) SyncOnce(ctx context.Context, now time.Time) (fetched, inserted int, err error) {
+	truncated := false
 	for _, folder := range syncFolders {
-		f, ins, err := p.syncFolder(ctx, folder, now)
+		f, ins, folderTruncated, err := p.syncFolder(ctx, folder, now)
 		fetched, inserted = fetched+f, inserted+ins
 		if err != nil {
 			err = fmt.Errorf("sync %s/%s: %w", p.mb.Address, folder, err)
@@ -64,6 +66,10 @@ func (p *Poller) SyncOnce(ctx context.Context, now time.Time) (fetched, inserted
 			}
 			return fetched, inserted, err
 		}
+		truncated = truncated || folderTruncated
+	}
+	if err := p.s.SetSyncResult(ctx, p.mb.Address, truncated, now); err != nil {
+		return fetched, inserted, err
 	}
 	if err := p.s.SetMailboxState(ctx, p.mb.Address, store.StateOK, "", now); err != nil {
 		return fetched, inserted, err
@@ -74,21 +80,21 @@ func (p *Poller) SyncOnce(ctx context.Context, now time.Time) (fetched, inserted
 	return fetched, inserted, nil
 }
 
-func (p *Poller) syncFolder(ctx context.Context, folder string, now time.Time) (fetched, inserted int, err error) {
+func (p *Poller) syncFolder(ctx context.Context, folder string, now time.Time) (fetched, inserted int, truncated bool, err error) {
 	cursor, err := p.s.Cursor(ctx, p.mb.Address, folder)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, false, err
 	}
 	since := cursor.Add(-time.Duration(p.cfg.PollOverlapMinutes) * time.Minute)
 	if cursor.IsZero() {
 		since = now.AddDate(0, 0, -p.cfg.InitialDays)
 	}
-	truncated := -1
+	truncatedAt := 0
 	msgs, err := p.c.ListMessages(ctx, p.mb.Address, folder, since, graph.ListOptions{
-		Top: p.Top, MaxPages: p.MaxPages, Truncated: func(n int) { truncated = n },
+		Top: p.Top, MaxPages: p.MaxPages, Truncated: func(n int) { truncated, truncatedAt = true, n },
 	})
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, truncated, err
 	}
 	newest := cursor
 	for _, m := range msgs {
@@ -102,7 +108,7 @@ func (p *Poller) syncFolder(ctx context.Context, folder string, now time.Time) (
 			return p.s.EnqueueTx(ctx, tx, KindClassify, id, now)
 		})
 		if err != nil {
-			return len(msgs), inserted, err
+			return len(msgs), inserted, truncated, err
 		}
 		if isNew {
 			inserted++
@@ -112,20 +118,20 @@ func (p *Poller) syncFolder(ctx context.Context, folder string, now time.Time) (
 			newest = m.ReceivedAt
 		}
 	}
-	if truncated >= 0 {
+	if truncated {
 		p.log.Warn("sync truncated at page cap; next run continues from the newest fetched message",
-			"folder", folder, "fetched", truncated)
+			"folder", folder, "fetched", truncatedAt)
 		if err := p.s.LogAction(ctx, "poller", "sync_truncated", p.mb.Address+"/"+folder,
-			map[string]any{"fetched": truncated, "since": since.UTC().Format(time.RFC3339)}, now); err != nil {
-			return len(msgs), inserted, err
+			map[string]any{"fetched": truncatedAt, "since": since.UTC().Format(time.RFC3339)}, now); err != nil {
+			return len(msgs), inserted, truncated, err
 		}
 	}
 	if newest.After(cursor) {
 		if err := p.s.SetCursor(ctx, p.mb.Address, folder, newest); err != nil {
-			return len(msgs), inserted, err
+			return len(msgs), inserted, truncated, err
 		}
 	}
-	return len(msgs), inserted, nil
+	return len(msgs), inserted, truncated, nil
 }
 
 func (p *Poller) signal() {

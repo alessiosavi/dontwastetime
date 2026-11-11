@@ -23,13 +23,14 @@ type MailboxRow struct {
 	Enabled, Digest         bool
 	PollSeconds             int
 	LastOKAt                *time.Time
+	LastSyncCompletedAt     *time.Time
+	SyncTruncated           bool
 	State, Reason           string
 	CursorInbox, CursorSent time.Time
 }
 
 // UpsertMailbox materializes a config entry. Only config-owned columns are
-// written on conflict; runtime columns (state, reason, last_ok_at, cursors)
-// survive.
+// written on conflict; runtime state, sync freshness and cursors survive.
 func (s *Store) UpsertMailbox(ctx context.Context, mb config.MailboxConfig) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO mailbox (address, enabled, digest, poll_interval_s) VALUES (?,?,?,?)
 		ON CONFLICT(address) DO UPDATE SET enabled = excluded.enabled, digest = excluded.digest,
@@ -58,10 +59,25 @@ func (s *Store) SetMailboxState(ctx context.Context, address, state, reason stri
 	return nil
 }
 
+// SetSyncResult records a successful poll pass. A truncated pass preserves
+// the last completed sync timestamp until a later pass finishes uncapped.
+func (s *Store) SetSyncResult(ctx context.Context, mailbox string, truncated bool, now time.Time) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE mailbox SET sync_truncated = ?,
+		last_sync_completed_at = CASE WHEN ? THEN last_sync_completed_at ELSE ? END
+		WHERE address = ?`, truncated, truncated, ts(now), mailbox)
+	if err != nil {
+		return fmt.Errorf("store: set sync result: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n != 1 {
+		return fmt.Errorf("store: set sync result: unknown mailbox %s", mailbox)
+	}
+	return nil
+}
+
 // ListMailboxes returns every known mailbox ordered by address.
 func (s *Store) ListMailboxes(ctx context.Context) ([]MailboxRow, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT address, enabled, digest, poll_interval_s, last_ok_at, state, reason,
-		cursor_inbox, cursor_sentitems FROM mailbox ORDER BY address`)
+		cursor_inbox, cursor_sentitems, last_sync_completed_at, sync_truncated FROM mailbox ORDER BY address`)
 	if err != nil {
 		return nil, fmt.Errorf("store: list mailboxes: %w", err)
 	}
@@ -69,11 +85,15 @@ func (s *Store) ListMailboxes(ctx context.Context) ([]MailboxRow, error) {
 	var out []MailboxRow
 	for rows.Next() {
 		var r MailboxRow
-		var lastOK, ci, cs sql.NullString
-		if err := rows.Scan(&r.Address, &r.Enabled, &r.Digest, &r.PollSeconds, &lastOK, &r.State, &r.Reason, &ci, &cs); err != nil {
+		var lastOK, ci, cs, lastSync sql.NullString
+		if err := rows.Scan(&r.Address, &r.Enabled, &r.Digest, &r.PollSeconds, &lastOK, &r.State, &r.Reason,
+			&ci, &cs, &lastSync, &r.SyncTruncated); err != nil {
 			return nil, err
 		}
 		if r.LastOKAt, err = scanTS(lastOK); err != nil {
+			return nil, err
+		}
+		if r.LastSyncCompletedAt, err = scanTS(lastSync); err != nil {
 			return nil, err
 		}
 		for _, p := range []struct {

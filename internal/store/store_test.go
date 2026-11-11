@@ -109,10 +109,59 @@ func TestOpen_ReplyExpectedMigrationLeavesExistingRowsNull(t *testing.T) {
 			t.Fatalf("legacy reply=%+v, err=%v", reply, err)
 		}
 		var version int
-		if err := s.DB().QueryRow("SELECT max(version) FROM schema_version").Scan(&version); err != nil || version != 3 {
+		if err := s.DB().QueryRow("SELECT max(version) FROM schema_version").Scan(&version); err != nil || version != len(migrations) {
 			t.Fatalf("schema version=%d, err=%v", version, err)
 		}
 		s.Close()
+	}
+}
+
+func TestOpen_TriageMigrationKeepsExistingThreads(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "old.db")
+	db, err := sql.Open("sqlite", p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if _, err := db.Exec("CREATE TABLE schema_version (version INTEGER PRIMARY KEY)"); err != nil {
+		t.Fatal(err)
+	}
+	for i, ddl := range migrations[:3] {
+		if _, err := db.Exec(ddl); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec("INSERT INTO schema_version VALUES (?)", i+1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO thread(thread_key, mailbox, subject, needs_reply, reply_due_at, priority)
+		VALUES ('c:old', 'm@example.test', 'Existing thread', 1, ?, 'P0')`, ts(now0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		s, err := Open(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var subject, priority, kind, imid, by string
+		var needs bool
+		var due, inbound, until, at sql.NullString
+		err = s.DB().QueryRow(`SELECT subject, needs_reply, reply_due_at, priority,
+			ack_kind, ack_inbound_at, ack_inbound_imid, snoozed_until, ack_by, ack_at
+			FROM thread WHERE thread_key = 'c:old'`).Scan(&subject, &needs, &due, &priority,
+			&kind, &inbound, &imid, &until, &by, &at)
+		s.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if subject != "Existing thread" || !needs || due.String != ts(now0) || priority != "P0" ||
+			kind != "" || imid != "" || by != "" || inbound.Valid || until.Valid || at.Valid {
+			t.Fatalf("migration changed old state or nonempty ack: subject=%q needs=%v due=%v priority=%q kind=%q inbound=%v imid=%q until=%v by=%q at=%v",
+				subject, needs, due, priority, kind, inbound, imid, until, by, at)
+		}
 	}
 }
 
@@ -286,6 +335,87 @@ func TestMailbox_UpsertPreservesRuntime(t *testing.T) {
 	}
 }
 
+func TestSetMailboxState_ProbeDoesNotStampSyncCompleted(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	mb := config.MailboxConfig{Address: "m@example.test", Enabled: true, PollSeconds: 180}
+	if err := s.UpsertMailbox(ctx, mb); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetMailboxState(ctx, mb.Address, StateOK, "", now0); err != nil {
+		t.Fatal(err)
+	}
+	var completed sql.NullString
+	var truncated bool
+	if err := s.DB().QueryRow(`SELECT last_sync_completed_at, sync_truncated FROM mailbox WHERE address = ?`, mb.Address).
+		Scan(&completed, &truncated); err != nil {
+		t.Fatal(err)
+	}
+	if completed.Valid || truncated {
+		t.Fatalf("probe changed sync freshness: completed=%+v truncated=%v", completed, truncated)
+	}
+	rows, err := s.ListMailboxes(ctx)
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("ListMailboxes: %v %v", rows, err)
+	}
+	if rows[0].LastOKAt == nil || !rows[0].LastOKAt.Equal(now0) {
+		t.Fatalf("probe did not stamp last_ok_at: %+v", rows[0])
+	}
+}
+
+func TestSetSyncResult_PreservesCompletedAtUntilCleanPass(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	mb := config.MailboxConfig{Address: "m@example.test", Enabled: true, PollSeconds: 180}
+	if err := s.UpsertMailbox(ctx, mb); err != nil {
+		t.Fatal(err)
+	}
+	completedAt := now0.Add(123 * time.Millisecond).In(time.FixedZone("UTC+2", 2*60*60))
+	nextCompletedAt := now0.Add(2 * time.Hour)
+	for _, step := range []struct {
+		truncated bool
+		at        time.Time
+		completed *time.Time
+	}{
+		{true, now0, nil},
+		{false, completedAt, &completedAt},
+		{true, now0.Add(time.Hour), &completedAt},
+		{false, nextCompletedAt, &nextCompletedAt},
+	} {
+		if err := s.SetSyncResult(ctx, mb.Address, step.truncated, step.at); err != nil {
+			t.Fatal(err)
+		}
+		// Neither config refreshes nor access probes may change sync freshness.
+		if err := s.UpsertMailbox(ctx, mb); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.SetMailboxState(ctx, mb.Address, StateOK, "", step.at.Add(time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		rows, err := s.ListMailboxes(ctx)
+		if err != nil || len(rows) != 1 {
+			t.Fatalf("ListMailboxes: %v %v", rows, err)
+		}
+		r := rows[0]
+		if r.SyncTruncated != step.truncated || (r.LastSyncCompletedAt == nil) != (step.completed == nil) {
+			t.Fatalf("sync result: completed=%v truncated=%v, want %v/%v", r.LastSyncCompletedAt, r.SyncTruncated, step.completed, step.truncated)
+		}
+		if step.completed != nil && !r.LastSyncCompletedAt.Equal(*step.completed) {
+			t.Fatalf("last_sync_completed_at = %v, want %v", r.LastSyncCompletedAt, *step.completed)
+		}
+		var raw sql.NullString
+		if err := s.DB().QueryRow(`SELECT last_sync_completed_at FROM mailbox WHERE address = ?`, mb.Address).Scan(&raw); err != nil {
+			t.Fatal(err)
+		}
+		if step.completed != nil && raw.String != ts(*step.completed) {
+			t.Fatalf("timestamp format = %q, want %q", raw.String, ts(*step.completed))
+		}
+	}
+	if err := s.SetSyncResult(ctx, "unknown@example.test", false, now0); err == nil {
+		t.Fatal("unknown mailbox accepted")
+	}
+}
+
 func TestUsageAdd_Today(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()
@@ -298,6 +428,33 @@ func TestUsageAdd_Today(t *testing.T) {
 	}
 	if in, out, _ := s.UsageToday(ctx, "2026-11-11"); in != 0 || out != 0 {
 		t.Fatalf("empty day = %d/%d", in, out)
+	}
+}
+
+func TestUsageMonth_SumsOnlyThatMonth(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	for _, row := range []struct {
+		day     string
+		in, out int
+	}{
+		{"2025-11-10", 999, 999},
+		{"2026-10-31", 999, 999},
+		{"2026-11-01", 100, 20},
+		{"2026-11-10", 50, 5},
+		{"2026-11-10", 10, 2},
+		{"2026-11-30", 40, 3},
+		{"2026-12-01", 999, 999},
+	} {
+		if err := s.UsageAdd(ctx, row.day, row.in, row.out); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if in, out, err := s.UsageMonth(ctx, "2026-11"); err != nil || in != 200 || out != 30 {
+		t.Fatalf("month tokens = %d/%d, want 200/30, err=%v", in, out, err)
+	}
+	if in, out, err := s.UsageMonth(ctx, "2027-01"); err != nil || in != 0 || out != 0 {
+		t.Fatalf("empty month tokens = %d/%d, err=%v", in, out, err)
 	}
 }
 

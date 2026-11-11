@@ -46,6 +46,8 @@ type Health struct {
 	TokensUsed           int        `json:"tokens_used"`
 	TokensLimit          int        `json:"tokens_limit"`
 	BudgetReached        bool       `json:"budget_reached"`
+	MonthlyCost          float64    `json:"monthly_cost,omitempty"`
+	MonthlyMaxCost       float64    `json:"monthly_max_cost,omitempty"`
 }
 
 // Degraded is one mailbox with a problem.
@@ -201,6 +203,13 @@ func health(ctx context.Context, s *store.Store, cfg *config.Config, at time.Tim
 	}
 	h.TokensUsed = in + out
 	h.BudgetReached = h.TokensLimit > 0 && h.TokensUsed >= h.TokensLimit
+	if cfg.LLM.MonthlyMaxCost > 0 {
+		in, out, err := s.UsageMonth(ctx, config.Month(at))
+		if err != nil {
+			return h, err
+		}
+		h.MonthlyCost, h.MonthlyMaxCost = cfg.LLM.Cost(in, out), cfg.LLM.MonthlyMaxCost
+	}
 	return h, nil
 }
 

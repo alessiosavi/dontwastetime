@@ -253,6 +253,40 @@ func TestBuild_HealthSection(t *testing.T) {
 	}
 }
 
+func TestBuild_HealthShowsMonthlySpend(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cap  float64
+	}{
+		{"enabled", 10}, {"disabled", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFx(t)
+			ctx := context.Background()
+			f.cfg.LLM.MonthlyMaxCost = tc.cap
+			f.cfg.LLM.PriceInPerMTok, f.cfg.LLM.PriceOutPerMTok = 0.30, 1.20
+			for _, day := range []string{"2026-10-31", "2026-11-01", "2026-11-09", "2026-12-01"} {
+				if err := f.s.UsageAdd(ctx, day, 1_000_000, 500_000); err != nil {
+					t.Fatal(err)
+				}
+			}
+			d, err := Build(ctx, f.s, f.cfg, f.tx, at)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for format, body := range map[string]string{"markdown": d.Markdown, "html": d.HTML} {
+				if tc.cap > 0 {
+					if !strings.Contains(body, "Spesa classificatore nel mese: $1.80 / $10.00 (stima)") {
+						t.Errorf("%s lacks current-month estimated spend", format)
+					}
+				} else if strings.Contains(body, "Spesa classificatore nel mese") {
+					t.Errorf("%s shows monthly spend with disabled cap", format)
+				}
+			}
+		})
+	}
+}
+
 func TestBuild_HTMLEscapes(t *testing.T) {
 	f := newFx(t)
 	f.add(t, "business@example.com", "evil@x.example", `<script>alert(1)</script>`, "unsure", time.Hour)

@@ -2,8 +2,10 @@ package pipeline
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -155,6 +157,107 @@ func TestSyncOnce_TruncatedReadAdvancesWithoutLoss(t *testing.T) {
 	}
 	if n := count(t, s, `SELECT count(*) FROM message`); n != 7 {
 		t.Fatalf("after catch-up runs: %d messages, want 7", n)
+	}
+}
+
+func assertSyncFreshness(t *testing.T, s *store.Store, completedAt *time.Time, truncated bool) {
+	t.Helper()
+	var completed sql.NullString
+	var gotTruncated bool
+	if err := s.DB().QueryRow(`SELECT last_sync_completed_at, sync_truncated FROM mailbox WHERE address = ?`, mbA).
+		Scan(&completed, &gotTruncated); err != nil {
+		t.Fatalf("read sync freshness: %v", err)
+	}
+	if gotTruncated != truncated {
+		t.Errorf("sync_truncated = %v, want %v", gotTruncated, truncated)
+	}
+	if completedAt == nil {
+		if completed.Valid {
+			t.Errorf("last_sync_completed_at = %q, want NULL", completed.String)
+		}
+		return
+	}
+	got, err := time.Parse(time.RFC3339Nano, completed.String)
+	if err != nil || !got.Equal(*completedAt) {
+		t.Errorf("last_sync_completed_at = %q (%v), want %v", completed.String, err, *completedAt)
+	}
+}
+
+func TestSyncOnce_TruncatedPassLeavesCompletedAtUnset(t *testing.T) {
+	for _, folder := range []string{store.FolderInbox, store.FolderSentItems} {
+		t.Run(folder, func(t *testing.T) {
+			s, f, c, cfg := setup(t, mbA)
+			msgs := synth(mbA, 7)
+			for i := range msgs {
+				msgs[i].Folder = folder
+			}
+			f.Add(msgs...)
+			p := NewPoller(c, s, cfg.Mailboxes[0], cfg, nil)
+			p.Top, p.MaxPages = 2, 2
+			fetched, inserted, err := p.SyncOnce(context.Background(), now0)
+			if err != nil || fetched != 4 || inserted != 4 {
+				t.Fatalf("capped run fetched=%d inserted=%d err=%v", fetched, inserted, err)
+			}
+			assertSyncFreshness(t, s, nil, true)
+		})
+	}
+}
+
+func TestSyncOnce_CleanPassStampsCompletedAt(t *testing.T) {
+	for _, n := range []int{0, 4} {
+		t.Run(fmt.Sprintf("messages_%d", n), func(t *testing.T) {
+			s, f, c, cfg := setup(t, mbA)
+			if err := s.SetSyncResult(context.Background(), mbA, true, now0.Add(-time.Hour)); err != nil {
+				t.Fatal(err)
+			}
+			f.Add(synth(mbA, n)...)
+			p := NewPoller(c, s, cfg.Mailboxes[0], cfg, nil)
+			p.Top, p.MaxPages = 2, 2
+			if _, _, err := p.SyncOnce(context.Background(), now0); err != nil {
+				t.Fatal(err)
+			}
+			assertSyncFreshness(t, s, &now0, false)
+		})
+	}
+}
+
+func TestSyncOnce_FailedPassPreservesFreshness(t *testing.T) {
+	for _, state := range []string{"fresh", "completed", "truncated"} {
+		t.Run(state, func(t *testing.T) {
+			s, f, c, cfg := setup(t, mbA)
+			ctx := context.Background()
+			previous := now0.Add(-time.Hour)
+			var completedAt *time.Time
+			if state != "fresh" {
+				if err := s.SetSyncResult(ctx, mbA, false, previous); err != nil {
+					t.Fatal(err)
+				}
+				completedAt = &previous
+			}
+			if state == "truncated" {
+				if err := s.SetSyncResult(ctx, mbA, true, previous.Add(time.Minute)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			inbox := synth(mbA, 1)[0]
+			sent := inbox
+			sent.Folder, sent.InternetMessageID = store.FolderSentItems, "<sent@a>"
+			f.Add(inbox, sent)
+			if _, err := s.DB().Exec(`CREATE TRIGGER inject_sent_failure BEFORE INSERT ON message
+				WHEN NEW.folder = 'sentitems' BEGIN SELECT RAISE(ABORT, 'injected sent failure'); END`); err != nil {
+				t.Fatal(err)
+			}
+			p := NewPoller(c, s, cfg.Mailboxes[0], cfg, nil)
+			_, inserted, err := p.SyncOnce(ctx, now0)
+			if err == nil || !strings.Contains(err.Error(), "injected sent failure") || inserted != 1 {
+				t.Fatalf("failed second folder inserted=%d err=%v", inserted, err)
+			}
+			assertSyncFreshness(t, s, completedAt, state == "truncated")
+			rows, err := s.ListMailboxes(ctx)
+			if err != nil || len(rows) != 1 || rows[0].State != store.StateDegraded {
+				t.Fatalf("failed pass state: %v %v", rows, err)
+			}
+		})
 	}
 }
 

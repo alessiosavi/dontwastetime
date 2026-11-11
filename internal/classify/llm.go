@@ -33,8 +33,8 @@ type Item struct {
 // Usage is token usage of one or more calls.
 type Usage struct{ In, Out int }
 
-// LLM is an OpenAI-compatible chat-completions client with a global daily
-// token budget shared by every LLM stage.
+// LLM is an OpenAI-compatible chat-completions client with global daily token
+// and monthly cost budgets shared by every LLM stage.
 type LLM struct {
 	cfg      config.LLMConfig
 	s        *store.Store
@@ -68,14 +68,25 @@ type chatResponse struct {
 // errBadRequest marks a 400 so JSON mode can be dropped once.
 var errBadRequest = errors.New("llm: 400 bad request")
 
-// checkBudget refuses before any call once today's tokens reach the cap.
+// checkBudget refuses before any call once the daily token or monthly cost
+// threshold is reached. In-flight calls can still settle above either cap.
 func (l *LLM) checkBudget(ctx context.Context) error {
-	in, out, err := l.s.UsageToday(ctx, config.Day(l.now()))
+	now := l.now()
+	in, out, err := l.s.UsageToday(ctx, config.Day(now))
 	if err != nil {
 		return err
 	}
 	if in+out >= l.cfg.DailyMaxTokens {
 		return store.ErrBudgetReached
+	}
+	if l.cfg.MonthlyMaxCost > 0 {
+		in, out, err := l.s.UsageMonth(ctx, config.Month(now))
+		if err != nil {
+			return err
+		}
+		if l.cfg.Cost(in, out) >= l.cfg.MonthlyMaxCost {
+			return store.ErrBudgetReached
+		}
 	}
 	return nil
 }
