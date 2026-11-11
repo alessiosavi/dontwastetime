@@ -89,7 +89,7 @@ func (s *Service) Overview(ctx context.Context, req OverviewReq) (OverviewResult
 		}
 	}
 	if p0Count > maxLimit {
-		r.Meta.NextCursor = (pageState{asOf: time.Unix(at.Unix(), 0).UTC()}).next(maxLimit)
+		r.Meta.NextCursor = (pageState{asOf: time.UnixMilli(at.UnixMilli()).UTC()}).next(maxLimit)
 	}
 	return r, nil
 }
@@ -139,7 +139,9 @@ func (s *Service) replyItems(ctx context.Context, req NeedsReplyReq, at time.Tim
 		if m.ReceivedAt.After(at) {
 			continue
 		}
-		items = append(items, ReplyItem{MessageItem: s.item(m, at), State: state,
+		item := s.item(m, at)
+		item.Bucket, item.BucketTitle = s.bucket(row.Cassetto)
+		items = append(items, ReplyItem{MessageItem: item, State: state,
 			DueAt: *row.ReplyDueAt, Priority: row.Priority, InboundID: m.ID})
 	}
 	return items, nil
@@ -214,7 +216,7 @@ func (s *Service) Search(ctx context.Context, req SearchReq) (ListResult, error)
 	if err != nil {
 		return ListResult{}, err
 	}
-	hits, err := s.store.SearchVisible(ctx, s.visibility, match, f, searchCap)
+	hits, err := s.store.SearchVisible(ctx, s.visibility, match, f, req.Order, searchCap)
 	if err != nil {
 		return ListResult{}, storeError(err)
 	}

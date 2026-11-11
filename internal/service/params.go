@@ -33,7 +33,7 @@ type cursor struct {
 }
 
 func (p Page) parse(now time.Time) (pageState, error) {
-	r := pageState{limit: p.Limit, asOf: time.Unix(now.Unix(), 0).UTC()}
+	r := pageState{limit: p.Limit, asOf: time.UnixMilli(now.UnixMilli()).UTC()}
 	if p.Limit < 0 {
 		return r, invalid("limit deve essere positivo")
 	}
@@ -61,15 +61,15 @@ func (p Page) parse(now time.Time) (pageState, error) {
 		return r, invalid("cursore non valido")
 	}
 	if err := d.Decode(new(any)); err != io.EOF || c.Offset == nil || c.AsOf == nil ||
-		*c.Offset < 0 || *c.Offset > int(^uint(0)>>1)-maxLimit-1 || *c.AsOf < 0 || *c.AsOf > now.Unix() {
+		*c.Offset < 0 || *c.Offset > int(^uint(0)>>1)-maxLimit-1 || *c.AsOf < 0 || *c.AsOf > now.UnixMilli() {
 		return r, invalid("cursore non valido")
 	}
-	r.offset, r.asOf = *c.Offset, time.Unix(*c.AsOf, 0).UTC()
+	r.offset, r.asOf = *c.Offset, time.UnixMilli(*c.AsOf).UTC()
 	return r, nil
 }
 
 func (p pageState) next(offset int) string {
-	raw, _ := json.Marshal(cursor{Offset: offset, AsOf: p.asOf.Unix()})
+	raw, _ := json.Marshal(cursor{Offset: offset, AsOf: p.asOf.UnixMilli()})
 	return base64.RawURLEncoding.EncodeToString(raw)
 }
 

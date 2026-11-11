@@ -128,7 +128,7 @@ func registerTools(s *mcp.Server, svc *service.Service) {
 		func(ctx context.Context, in messageInput) (service.MessageDetail, error) {
 			return svc.GetMessage(ctx, in.ID)
 		})
-	addTool(s, "digest", "The same content as the emailed digest: personal mail never appears here; use list_messages or search for it. Today's preview is built without sweeping, saving or sending; past dates read saved digests. Markdown is bounded and reports trimmed.", true,
+	addTool(s, "digest", "The digest as it would be built now, with the same rules as the emailed digest: personal mail and digest:false mailboxes never appear here; use list_messages or search for them. Today's preview is built without sweeping, saving or sending; past dates read saved digests. Markdown is bounded and reports trimmed.", true,
 		func(ctx context.Context, in digestInput) (digestOutput, error) {
 			r, err := svc.Digest(ctx, in.Date)
 			return digestOutput{Untrusted: r.DigestText, Built: r.Built, Trimmed: r.Trimmed}, err

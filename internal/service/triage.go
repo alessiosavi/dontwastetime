@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"time"
 
 	"github.com/alessiosavi/go-dontwastetime/internal/config"
@@ -32,7 +33,15 @@ func (s *Service) Relabel(ctx context.Context, id int64, bucket string) (Relabel
 		return RelabelResult{}, storeError(err)
 	}
 	at := s.now()
-	old, err := s.store.AddCorrection(ctx, id, bucket, s.operator, at)
+	var old string
+	err = s.store.WithTx(ctx, func(tx *sql.Tx) error {
+		if err := s.checkTriageScopeTx(ctx, tx, m.ThreadKey); err != nil {
+			return err
+		}
+		var err error
+		old, err = s.store.AddCorrectionTx(ctx, tx, id, bucket, s.operator, at)
+		return err
+	})
 	if err != nil {
 		return RelabelResult{}, storeError(err)
 	}
@@ -107,16 +116,49 @@ func (s *Service) triage(ctx context.Context, ref string, at time.Time, change f
 	if err != nil {
 		return ThreadState{}, err
 	}
-	if _, err := threads.Triage(ctx, s.store, s.cfg, key, at, func(tx *sql.Tx) error { return change(tx, key) }); err != nil {
+	if _, err := threads.Triage(ctx, s.store, s.cfg, key, at, func(tx *sql.Tx) error {
+		if err := s.checkTriageScopeTx(ctx, tx, key); err != nil {
+			return err
+		}
+		return change(tx, key)
+	}); err != nil {
 		return ThreadState{}, storeError(err)
 	}
 	return s.threadState(ctx, key, at)
+}
+
+// Check within the write transaction so a concurrent refresh cannot replace
+// the last inbound between authorization and mutation. Ingest may not have
+// created the thread row yet; in that case there is no derived state to hide.
+func (s *Service) checkTriageScopeTx(ctx context.Context, tx *sql.Tx, key string) error {
+	r, err := store.ThreadTx(ctx, tx, key)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return storeError(err)
+	}
+	if r.LastInboundMessageID != 0 {
+		m, err := store.VisibleMessageTx(ctx, tx, s.visibility, r.LastInboundMessageID)
+		if err != nil {
+			return storeError(err)
+		}
+		if m.ThreadKey != key {
+			return ErrNotFound
+		}
+	}
+	return nil
 }
 
 func (s *Service) threadState(ctx context.Context, key string, at time.Time) (ThreadState, error) {
 	r, err := s.store.Thread(ctx, key)
 	if err != nil {
 		return ThreadState{}, storeError(err)
+	}
+	if r.LastInboundMessageID != 0 {
+		if err := s.visibleInbound(ctx, key, r.LastInboundMessageID); err != nil {
+			return ThreadState{}, err
+		}
 	}
 	return ThreadState{Thread: key, State: threads.StateOf(r, at), DueAt: r.ReplyDueAt, SnoozedUntil: r.SnoozedUntil}, nil
 }

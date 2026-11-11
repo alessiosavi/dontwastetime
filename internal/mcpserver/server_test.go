@@ -149,7 +149,7 @@ func TestServer_ListsAllToolsWithReadOnlyHints(t *testing.T) {
 			t.Errorf("%s missing description/schema", tool.Name)
 		}
 		if tool.Name == "digest" {
-			for _, phrase := range []string{"emailed digest", "personal", "list_messages", "search", "untrusted"} {
+			for _, phrase := range []string{"emailed digest", "built now", "same rules", "personal", "digest:false", "list_messages", "search", "untrusted"} {
 				if !strings.Contains(tool.Description, phrase) {
 					t.Errorf("digest description missing %q: %s", phrase, tool.Description)
 				}

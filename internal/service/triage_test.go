@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -47,7 +48,7 @@ func TestTriage_OutOfScopeThreadNotFound(t *testing.T) {
 	ctx := context.Background()
 	id := f.mail(t, "disabled@example.test", "hidden", "hidden", "clienti", f.at.Add(-time.Hour))
 	visible := f.mail(t, testBox, "mixed", "visible", "personal", f.at.Add(-time.Hour))
-	hiddenCopy := f.mail(t, "disabled@example.test", "mixed", "hidden", "clienti", f.at.Add(-time.Hour))
+	hiddenCopy := f.mail(t, "disabled@example.test", "mixed", "hidden", "clienti", f.at.Add(-2*time.Hour))
 	for _, ref := range []string{"hidden", fmt.Sprintf("#%d", id), fmt.Sprintf("#%d", hiddenCopy), "missing"} {
 		t.Run(ref, func(t *testing.T) {
 			calls := []func() error{
@@ -162,5 +163,68 @@ func TestTriage_ReversibleAndAudited(t *testing.T) {
 	var details string
 	if err := f.db.DB().QueryRowContext(ctx, `SELECT details_json FROM action_log WHERE action = 'mark_handled'`).Scan(&details); err != nil || !strings.Contains(details, "risolto al telefono") {
 		t.Fatalf("note=%q err=%v", details, err)
+	}
+}
+
+func TestTriage_HiddenLastInboundDoesNotWrite(t *testing.T) {
+	for _, action := range []string{"reopen", "mute_thread", "relabel", "mark_handled", "snooze", "threadState"} {
+		t.Run(action, func(t *testing.T) {
+			f := setup(t)
+			ctx := context.Background()
+			visible := f.obligation(t, "mixed", "P2", f.at.Add(-2*time.Hour), f.at.Add(22*time.Hour), false)
+			hidden := f.mail(t, "disabled@example.test", "mixed", "hidden inbound", "clienti", f.at.Add(-time.Hour))
+			if _, err := threads.Recompute(ctx, f.db, "mixed", f.cfg, f.at); err != nil {
+				t.Fatal(err)
+			}
+			before, err := f.db.Thread(ctx, "mixed")
+			if err != nil || before.LastInboundMessageID != hidden {
+				t.Fatalf("fixture thread=%+v err=%v", before, err)
+			}
+			var updatedBefore string
+			if err := f.db.DB().QueryRow(`SELECT updated_at FROM thread WHERE thread_key='mixed'`).Scan(&updatedBefore); err != nil {
+				t.Fatal(err)
+			}
+			classificationBefore, err := f.db.ClassificationOf(ctx, visible)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.at = f.at.Add(time.Minute)
+			ref := fmt.Sprintf("#%d", visible)
+			var state ThreadState
+			var relabeled RelabelResult
+			switch action {
+			case "reopen":
+				state, err = f.svc.Reopen(ctx, ref)
+			case "mute_thread":
+				state, err = f.svc.Mute(ctx, ref)
+			case "relabel":
+				relabeled, err = f.svc.Relabel(ctx, visible, "personal")
+			case "mark_handled":
+				state, err = f.svc.MarkHandled(ctx, ref, visible, "")
+			case "snooze":
+				state, err = f.svc.Snooze(ctx, ref, visible, f.at.Add(time.Hour).Format(time.RFC3339))
+			case "threadState":
+				state, err = f.svc.threadState(ctx, "mixed", f.at)
+			}
+			if !errors.Is(err, ErrNotFound) || !reflect.DeepEqual(state, ThreadState{}) || relabeled != (RelabelResult{}) {
+				t.Errorf("hidden last inbound: state=%+v relabel=%+v err=%v, want ErrNotFound and empty result", state, relabeled, err)
+			}
+			after, err := f.db.Thread(ctx, "mixed")
+			if err != nil || !reflect.DeepEqual(before, after) {
+				t.Errorf("thread changed: before=%+v after=%+v err=%v", before, after, err)
+			}
+			var updatedAfter string
+			if err := f.db.DB().QueryRow(`SELECT updated_at FROM thread WHERE thread_key='mixed'`).Scan(&updatedAfter); err != nil || updatedAfter != updatedBefore {
+				t.Errorf("thread updated_at changed: %q -> %q err=%v", updatedBefore, updatedAfter, err)
+			}
+			var actions, corrections, jobs int
+			if err := f.db.DB().QueryRow(`SELECT (SELECT count(*) FROM action_log), (SELECT count(*) FROM corrections), (SELECT count(*) FROM queue)`).Scan(&actions, &corrections, &jobs); err != nil || actions != 0 || corrections != 0 || jobs != 0 {
+				t.Errorf("unexpected writes: actions=%d corrections=%d jobs=%d err=%v", actions, corrections, jobs, err)
+			}
+			classificationAfter, err := f.db.ClassificationOf(ctx, visible)
+			if err != nil || !reflect.DeepEqual(classificationBefore, classificationAfter) {
+				t.Errorf("classification changed: before=%+v after=%+v err=%v", classificationBefore, classificationAfter, err)
+			}
+		})
 	}
 }

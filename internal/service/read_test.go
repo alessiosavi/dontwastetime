@@ -241,7 +241,7 @@ func TestPage_ClampsLimitAndKeepsAsOf(t *testing.T) {
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(r.Meta.NextCursor)
 	var cursor map[string]int64
-	if err != nil || json.Unmarshal(raw, &cursor) != nil || cursor["o"] != 20 || cursor["a"] != f.at.Unix() || len(cursor) != 2 {
+	if err != nil || json.Unmarshal(raw, &cursor) != nil || cursor["o"] != 20 || cursor["a"] != f.at.UnixMilli() || len(cursor) != 2 {
 		t.Fatalf("cursor shape=%q err=%v", raw, err)
 	}
 	f.at = f.at.Add(2 * time.Hour)
@@ -255,7 +255,7 @@ func TestPage_ClampsLimitAndKeepsAsOf(t *testing.T) {
 		t.Fatalf("clamped page=%+v err=%v", p, err)
 	}
 	for _, p := range []Page{{Limit: -1}, {Cursor: "bad"}, {Cursor: base64.RawURLEncoding.EncodeToString([]byte(`{"o":-1,"a":1}`))},
-		{Cursor: base64.RawURLEncoding.EncodeToString([]byte(`{}`))}, {Cursor: base64.RawURLEncoding.EncodeToString([]byte(`{"o":0,"a":999999999999}`))}} {
+		{Cursor: base64.RawURLEncoding.EncodeToString([]byte(`{}`))}, {Cursor: base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf(`{"o":0,"a":%d}`, f.at.UnixMilli()+1)))}} {
 		if _, err := p.parse(f.at); !errors.Is(err, ErrInvalid) {
 			t.Errorf("invalid page=%+v err=%v", p, err)
 		}
@@ -488,5 +488,120 @@ func TestSearch_UnclassifiedFilterBeforeCandidateCap(t *testing.T) {
 	l, err := f.svc.ListMessages(ctx, ListReq{Bucket: "non classificato"})
 	if err != nil || len(l.Items) != 1 || l.Items[0].ID != pending {
 		t.Fatalf("unclassified list=%+v err=%v", l.Items, err)
+	}
+}
+
+func TestNeedsReply_UsesThreadBucketDuringClassificationBacklog(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	f.mail(t, testBox, "backlog", "classified message", "clienti", f.at.Add(-2*time.Hour))
+	latest := f.mail(t, testBox, "backlog", "unclassified inbound", "", f.at.Add(-time.Hour))
+	if _, err := threads.Recompute(ctx, f.db, "backlog", f.cfg, f.at); err != nil {
+		t.Fatal(err)
+	}
+	for _, bucket := range []string{"", "clienti", unclassified} {
+		r, err := f.svc.NeedsReply(ctx, NeedsReplyReq{Bucket: bucket})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if bucket == unclassified {
+			if len(r.Items) != 0 {
+				t.Errorf("unclassified filter returned classified thread: %+v", r.Items)
+			}
+			continue
+		}
+		if len(r.Items) != 1 || r.Items[0].ID != latest || r.Items[0].Bucket != "clienti" || r.Items[0].BucketTitle != "Clienti" {
+			t.Errorf("bucket=%q items=%+v, want latest inbound with thread bucket clienti/Clienti", bucket, r.Items)
+		}
+	}
+	// The unclassified filter still matches an obligation whose thread bucket is empty.
+	id := f.obligation(t, "empty-bucket", "P2", f.at.Add(-time.Hour), f.at.Add(time.Hour), false)
+	if _, err := f.db.DB().Exec(`UPDATE thread SET cassetto='' WHERE thread_key='empty-bucket'`); err != nil {
+		t.Fatal(err)
+	}
+	r, err := f.svc.NeedsReply(ctx, NeedsReplyReq{Bucket: unclassified})
+	if err != nil || len(r.Items) != 1 || r.Items[0].ID != id || r.Items[0].Bucket != unclassified || r.Items[0].BucketTitle != unclassified {
+		t.Errorf("empty thread bucket=%+v err=%v", r.Items, err)
+	}
+}
+
+func TestSearch_RecentCapsAfterDateOrdering(t *testing.T) {
+	f := setup(t)
+	ctx := context.Background()
+	newest := f.mail(t, testBox, "newest", "contratto "+strings.Repeat("filler ", 1000), "", f.at.Add(-time.Minute))
+	err := f.db.WithTx(ctx, func(tx *sql.Tx) error {
+		for i := 0; i < 599; i++ {
+			m := graph.Message{ID: fmt.Sprintf("relevant-%d", i), InternetMessageID: fmt.Sprintf("<relevant-%d@x>", i),
+				Mailbox: testBox, Folder: store.FolderInbox, BodyText: "contratto", ReceivedAt: f.at.Add(-time.Hour)}
+			if _, _, err := f.db.UpsertMessageTx(ctx, tx, m, "older", f.at); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := f.svc.Search(ctx, SearchReq{Query: "contratto", Order: "recent", Page: Page{Limit: 1}})
+	if err != nil || len(r.Items) != 1 || r.Items[0].ID != newest {
+		t.Fatalf("recent search: items=%+v err=%v, want newest id %d despite weakest BM25", r.Items, err, newest)
+	}
+}
+
+func TestReads_IncludeMailEarlierInSameSecond(t *testing.T) {
+	f := setup(t)
+	f.at = f.at.Add(800*time.Millisecond + 123456*time.Nanosecond)
+	ctx := context.Background()
+	id := f.obligation(t, "subsecond", "P2", f.at.Add(-300*time.Millisecond), f.at.Add(time.Hour), false)
+	for _, name := range []string{"list_messages", "get_thread", "needs_reply", "search"} {
+		t.Run(name, func(t *testing.T) {
+			var items []MessageItem
+			var err error
+			switch name {
+			case "list_messages":
+				var r ListResult
+				r, err = f.svc.ListMessages(ctx, ListReq{})
+				items = r.Items
+			case "get_thread":
+				var r ThreadResult
+				r, err = f.svc.GetThread(ctx, "subsecond")
+				items = r.Messages
+			case "needs_reply":
+				var r NeedsReplyResult
+				r, err = f.svc.NeedsReply(ctx, NeedsReplyReq{})
+				for _, item := range r.Items {
+					items = append(items, item.MessageItem)
+				}
+			case "search":
+				var r ListResult
+				r, err = f.svc.Search(ctx, SearchReq{Query: "sentinel"})
+				items = r.Items
+			}
+			if err != nil || len(items) != 1 || items[0].ID != id {
+				t.Errorf("same-second message excluded: items=%+v err=%v, want id %d", items, err, id)
+			}
+		})
+	}
+}
+
+func TestPage_CursorPreservesMilliseconds(t *testing.T) {
+	at := testNow.Add(800*time.Millisecond + 123456*time.Nanosecond)
+	p, err := (Page{}).parse(at)
+	if err != nil || !p.asOf.Equal(time.UnixMilli(at.UnixMilli())) {
+		t.Errorf("first page as_of=%v err=%v, want millisecond precision", p.asOf, err)
+	}
+	encoded := p.next(1)
+	raw, err := base64.RawURLEncoding.DecodeString(encoded)
+	var c cursor
+	if err != nil || json.Unmarshal(raw, &c) != nil || c.AsOf != at.UnixMilli() {
+		t.Errorf("cursor=%s err=%v, want millisecond timestamp %d", raw, err, at.UnixMilli())
+	}
+	resumed, err := (Page{Cursor: encoded}).parse(at.Add(time.Second))
+	if err != nil || !resumed.asOf.Equal(time.UnixMilli(at.UnixMilli())) || resumed.offset != 1 {
+		t.Errorf("resumed page=%+v err=%v", resumed, err)
+	}
+	future, _ := json.Marshal(cursor{Offset: 0, AsOf: at.UnixMilli() + 1})
+	if _, err := (Page{Cursor: base64.RawURLEncoding.EncodeToString(future)}).parse(at); !errors.Is(err, ErrInvalid) {
+		t.Errorf("future millisecond cursor: %v, want ErrInvalid", err)
 	}
 }
