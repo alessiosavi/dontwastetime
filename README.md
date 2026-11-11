@@ -12,6 +12,8 @@ The only mail it sends is the digest and the P0 alerts, from `digest_sender`
 
 ## How it works
 
+Taxonomy v2 distinguishes vendor payments, accountant requests, prospects and event stages.
+
 ```
 pollers (one per mailbox, every 3 min, inbox + sentitems, 30-min overlap)
    │ insert message + classify job in one transaction (dedupe: mailbox + internetMessageId)
@@ -28,6 +30,12 @@ calendly.com, tito.io, eventbrite.com, eventbrite.it, trenitalia.it, including
 subdomains) are classified as notifications and never need a reply. Mail first
 stored more than 14 days after receipt does not open a reply obligation; a later
 fresh inbound in the same thread is tracked normally.
+
+Each classification stores nullable `reply_expected` from the LLM: true opens an obligation unless
+the message is suppressed (automatic, bulk/list, no-reply or receipt headers and
+subjects); false never opens one. Missing or malformed values, rule classifications
+and existing rows use the tracked-label fallback. The SLA is the label's threshold
+when tracked, otherwise 48 hours. `dwt correct` preserves this decision.
 
 State lives in `~/Library/Application Support/dontwastetime/` (override with
 `state_dir`, `DWT_STATE_DIR` or `--state-dir`): `dwt.db`, `digests/`,
@@ -102,7 +110,10 @@ Every command accepts `--config`, `--state-dir`, `--env` and `--taxonomy`
   marked degraded with a reason and shown in the digest; the others keep working.
 - **Budget**: `LLM_DAILY_MAX_TOKENS` (default 2,000,000) covers every LLM stage.
   When it is reached, classification pauses (jobs wait, nothing is lost) and the
-  digest says so.
+  digest says so. Each HTTP attempt first reserves estimated input tokens (request
+  JSON bytes / 4); successful responses replace the estimate with actual usage.
+  Calls that fail or receive no answer keep their reservation, including JSON-mode
+  fallback attempts.
 - **Restarts**: ingest and enqueue are one transaction; a restart resets
   interrupted jobs, clears stale leases and re-enqueues every unclassified
   message. Digests missed while the Mac slept go out when it wakes (the 3 most

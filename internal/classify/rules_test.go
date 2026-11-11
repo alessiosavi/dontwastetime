@@ -26,7 +26,7 @@ func inbound(from, subject string) graph.Message {
 
 func TestLoadTaxonomy_RepoFile(t *testing.T) {
 	tx := taxonomy(t)
-	if tx.Version != "v1" || len(tx.Labels) != 18 || len(tx.Order) != 18 {
+	if tx.Version != "v2" || len(tx.Labels) != 18 || len(tx.Order) != 18 {
 		t.Fatalf("version %q labels %d order %d", tx.Version, len(tx.Labels), len(tx.Order))
 	}
 	if tx.Labels["clienti"].Title != "Clienti" || !tx.Has("admin.invoices") || tx.Has("nope") {
@@ -74,7 +74,7 @@ func TestRules_InvoicesByAttachment(t *testing.T) {
 
 func TestRules_NewsletterByHeader(t *testing.T) {
 	tx := taxonomy(t)
-	for _, h := range []graph.Header{{Name: "List-Unsubscribe", Value: "<mailto:u@news.example>"}, {Name: "Precedence", Value: "bulk"}} {
+	for _, h := range []graph.Header{{Name: "List-Id", Value: "<news.example>"}, {Name: "Precedence", Value: "bulk"}, {Name: "Precedence", Value: "list"}} {
 		r, ok := Rules(inbound("news@brand.example", "Le novità di novembre"), []graph.Header{h}, nil, tx)
 		if !ok || r.Label != "marketing.news" {
 			t.Errorf("header %s: got %+v ok=%v", h.Name, r, ok)
@@ -96,8 +96,8 @@ func TestRules_AutoByHeader(t *testing.T) {
 func TestRules_NotificationsBySender(t *testing.T) {
 	tx := taxonomy(t)
 	cases := map[string]string{
-		"no-reply@shop.example":       "Ricevuta del tuo ordine",
-		"noreply@bank.example":        "Conferma di pagamento",
+		"no-reply@shop.example":       "Conferma del tuo ordine",
+		"noreply@bank.example":        "Notifica di accesso",
 		"mailer-daemon@example.com":     "Undeliverable: Rinnovo",
 		"posta-certificata@pec.aruba": "ACCETTAZIONE: Invio documenti",
 		"mario@client.example":        "Risposta automatica: fuori ufficio",
@@ -106,6 +106,37 @@ func TestRules_NotificationsBySender(t *testing.T) {
 		if r, ok := Rules(inbound(from, subj), nil, nil, tx); !ok || r.Label != "notifications" {
 			t.Errorf("%s / %q: got %+v ok=%v", from, subj, r, ok)
 		}
+	}
+}
+
+func TestRules_UnsubscribeIsOnlyAHint(t *testing.T) {
+	tx := taxonomy(t)
+	for _, subject := range []string{"Monthly product report", "Payment failed", "Security alert", "Newsletter"} {
+		r, ok := Rules(inbound("mail@vendor.example", subject),
+			[]graph.Header{{Name: "lIsT-uNsUbScRiBe", Value: "<mailto:u@x>"}}, nil, tx)
+		if ok {
+			t.Errorf("%q classified from unsubscribe alone: %+v", subject, r)
+		}
+	}
+}
+
+func TestRules_NoReplyPaymentSplit(t *testing.T) {
+	tx := taxonomy(t)
+	for _, word := range []string{"pagamento", "payment", "ricevuta", "receipt", "addebito", "charge", "fattura", "invoice"} {
+		t.Run(word, func(t *testing.T) {
+			r, ok := Rules(inbound("no-reply@vendor.example", "Conferma "+word), nil, nil, tx)
+			if !ok || r.Label != "admin.invoices" || r.Confidence != 0.85 || r.Rationale != "mittente no-reply e oggetto da pagamento" {
+				t.Fatalf("payment rule: %+v, ok=%v", r, ok)
+			}
+		})
+	}
+	for _, word := range []string{"conferma", "confirmation", "notifica", "notification", "ordine", "order"} {
+		if r, ok := Rules(inbound("noreply@vendor.example", word), nil, nil, tx); !ok || r.Label != "notifications" {
+			t.Errorf("%s: %+v, ok=%v", word, r, ok)
+		}
+	}
+	if r, ok := Rules(inbound("human@vendor.example", "Payment"), nil, nil, tx); ok {
+		t.Fatalf("payment without no-reply sender: %+v", r)
 	}
 }
 

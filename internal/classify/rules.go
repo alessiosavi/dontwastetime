@@ -17,6 +17,7 @@ type Result struct {
 	Label, Entity    string
 	Confidence       float64
 	Urgent, Negative bool
+	ReplyExpected    *bool // nil for rules and unavailable LLM decisions
 	Method           string
 	Rationale        string
 }
@@ -26,7 +27,8 @@ var (
 
 	noReplyLocal = []string{"no-reply", "noreply", "no_reply", "do-not-reply", "donotreply", "notification", "notifiche", "notify"}
 	bounceLocal  = []string{"mailer-daemon", "postmaster"}
-	receiptWords = []string{"ricevuta", "receipt", "conferma", "confirmation", "notifica", "notification", "ordine", "order", "pagamento", "payment"}
+	paymentWords = []string{"pagamento", "payment", "ricevuta", "receipt", "addebito", "charge", "fattura", "invoice"}
+	receiptWords = []string{"conferma", "confirmation", "notifica", "notification", "ordine", "order"}
 	pecWords     = []string{"accettazione", "avvenuta consegna", "mancata consegna", "posta certificata", "anomalia messaggio"}
 	oofWords     = []string{"risposta automatica", "automatic reply", "auto reply", "autoreply", "out of office", "fuori ufficio", "fuori sede", "undeliverable", "non recapitabile", "delivery status notification", "mail delivery failed"}
 	// Collaborator and event-venue invoices follow their own cassetto
@@ -129,10 +131,8 @@ func Rules(m graph.Message, headers []graph.Header, atts []graph.Attachment, t *
 		}
 	}
 
-	// Bulk / mailing lists → newsletter.
-	if _, ok := header(headers, "List-Unsubscribe"); ok {
-		return rule("marketing.news", 0.9, "newsletter (List-Unsubscribe)")
-	}
+	// Explicit mailing lists / bulk precedence → newsletter.
+	// List-Unsubscribe alone is only a hint for the LLM.
 	if _, ok := header(headers, "List-Id"); ok {
 		return rule("marketing.news", 0.9, "mailing list (List-Id)")
 	}
@@ -140,9 +140,13 @@ func Rules(m graph.Message, headers []graph.Header, atts []graph.Attachment, t *
 		return rule("marketing.news", 0.85, "invio massivo (Precedence: "+v+")")
 	}
 
-	// No-reply sender with a receipt-ish subject → notifications.
-	if stringutil.HasAnyPrefix(local, noReplyLocal...) && hasWord(subj, receiptWords) {
-		return rule("notifications", 0.9, "mittente no-reply e oggetto da ricevuta")
+	if stringutil.HasAnyPrefix(local, noReplyLocal...) {
+		if hasWord(subj, paymentWords) {
+			return rule("admin.invoices", 0.85, "mittente no-reply e oggetto da pagamento")
+		}
+		if hasWord(subj, receiptWords) {
+			return rule("notifications", 0.9, "mittente no-reply e oggetto da ricevuta")
+		}
 	}
 
 	// Accounting keywords from an external sender.

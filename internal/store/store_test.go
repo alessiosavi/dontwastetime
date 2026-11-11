@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"time"
@@ -70,6 +71,48 @@ func TestOpen_Pragmas(t *testing.T) {
 	_ = s.DB().QueryRow(`PRAGMA busy_timeout`).Scan(&busy)
 	if mode != "wal" || fk != 1 || busy != 5000 {
 		t.Fatalf("journal_mode=%s foreign_keys=%d busy_timeout=%d", mode, fk, busy)
+	}
+}
+
+func TestOpen_ReplyExpectedMigrationLeavesExistingRowsNull(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "old.db")
+	db, err := sql.Open("sqlite", p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec("CREATE TABLE schema_version (version INTEGER PRIMARY KEY)"); err != nil {
+		t.Fatal(err)
+	}
+	for i, ddl := range migrations[:2] {
+		if _, err := db.Exec(ddl); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec("INSERT INTO schema_version VALUES (?)", i+1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := &Store{db: db}
+	id, _ := upsert(t, old, msg("m@example.test", "<old@x>", now0))
+	if _, err := db.Exec(`INSERT INTO classification(message_id,label,confidence,method,classified_at) VALUES (?,'clienti',0.9,'llm',?)`, id, ts(now0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		s, err := Open(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var reply sql.NullBool
+		if err := s.DB().QueryRow("SELECT reply_expected FROM classification WHERE message_id=?", id).Scan(&reply); err != nil || reply.Valid {
+			t.Fatalf("legacy reply=%+v, err=%v", reply, err)
+		}
+		var version int
+		if err := s.DB().QueryRow("SELECT max(version) FROM schema_version").Scan(&version); err != nil || version != 3 {
+			t.Fatalf("schema version=%d, err=%v", version, err)
+		}
+		s.Close()
 	}
 }
 

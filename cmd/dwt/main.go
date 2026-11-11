@@ -35,6 +35,7 @@ commands:
   classify     drain pending classify/thread jobs once [--limit n]
   digest       build and send the digest [--date YYYY-MM-DD|today] [--dry-run]
   explore      phase-0 clustering report [--days n] [--mailboxes a,b] [--max-messages n]
+  eval         run --gold file.jsonl [--model name] [--out dir]
   mailboxes    discover [--write-config] | verify
   correct      <message-id> <label>   relabel a message (ids are printed in the digest)
   mute-thread  <message-id|thread-key> silence a thread resolved off-mail
@@ -64,7 +65,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, usage)
 		return 0
-	case "serve", "sync", "classify", "digest", "explore", "mailboxes", "correct", "mute-thread", "doctor":
+	case "serve", "sync", "classify", "digest", "explore", "eval", "mailboxes", "correct", "mute-thread", "doctor":
 	default:
 		fmt.Fprintf(stderr, "dwt: unknown command %q\n%s", cmd, usage)
 		return 2
@@ -106,19 +107,29 @@ func dispatch(ctx context.Context, cmd string, args []string, stdout, stderr io.
 	mailboxes := fs.String("mailboxes", "", "explore: comma-separated mailboxes (default: all enabled)")
 	maxMessages := fs.Int("max-messages", 5000, "explore: total message cap")
 	writeConfig := fs.Bool("write-config", false, "mailboxes discover: merge found mailboxes into the config file")
+	gold := fs.String("gold", "", "eval run: gold JSONL file")
+	model := fs.String("model", "", "eval run: override the configured model for this run")
+	evalOut := fs.String("out", "", "eval run: report directory (default: <state>/eval/runs)")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
+		return errUsage
+	}
+	if cmd == "eval" && (len(pos) != 1 || pos[0] != "run" || *gold == "") {
+		fmt.Fprintln(stderr, "usage: dwt eval run --gold file.jsonl [--model name] [--out dir]")
 		return errUsage
 	}
 
 	n := need{}
 	switch cmd {
-	case "serve", "classify", "explore":
+	case "serve", "classify", "explore", "eval":
 		n = need{graph: true, llm: true}
 	case "sync", "mailboxes":
 		n = need{graph: true}
 	case "digest":
 		n = need{graph: !*dryRun}
+	}
+	if cmd == "eval" {
+		n.model = *model
 	}
 	a, err := openApp(p, n)
 	if err != nil {
@@ -139,6 +150,8 @@ func dispatch(ctx context.Context, cmd string, args []string, stdout, stderr io.
 		return a.syncCmd(ctx, *mailboxFlag, stdout)
 	case "classify":
 		return a.classifyCmd(ctx, *limit, stdout)
+	case "eval":
+		return a.evalCmd(ctx, *gold, *model, *evalOut, stdout)
 	case "digest":
 		at, err := digestInstant(*date, a.now())
 		if err != nil {

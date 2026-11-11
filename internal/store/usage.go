@@ -24,3 +24,16 @@ func (s *Store) UsageToday(ctx context.Context, day string) (in, out int, err er
 	}
 	return in, out, nil
 }
+
+// UsageAdjust settles a previously reserved call without incrementing calls.
+// Deltas may be negative when the input estimate exceeded actual usage.
+func (s *Store) UsageAdjust(ctx context.Context, day string, in, out int) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE llm_usage SET in_tokens = in_tokens + ?, out_tokens = out_tokens + ? WHERE day = ?`, in, out, day)
+	if err != nil {
+		return fmt.Errorf("store: usage adjust: %w", err)
+	}
+	if n, err := res.RowsAffected(); err != nil || n != 1 {
+		return fmt.Errorf("store: usage adjust: reservation missing")
+	}
+	return nil
+}

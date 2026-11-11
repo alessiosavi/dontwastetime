@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"sync"
@@ -75,12 +76,12 @@ func (e *classifyEnv) label(t *testing.T, imid string) store.Classification {
 func TestClassifyJob_RulesSkipLLM(t *testing.T) {
 	e := newClassifyEnv(t, llmtest.Label("clienti", 0.9))
 	m := synth(mbA, 1)[0]
-	e.f.Headers[m.ID] = []graph.Header{{Name: "List-Unsubscribe", Value: "<mailto:u@x>"}}
+	e.f.Headers[m.ID] = []graph.Header{{Name: "List-Id", Value: "<news.example>"}}
 	e.ingest(t, m)
 	if _, err := e.runNext(t); err != nil {
 		t.Fatal(err)
 	}
-	if c := e.label(t, m.InternetMessageID); c.Label != "marketing.news" || c.Method != "rule" {
+	if c := e.label(t, m.InternetMessageID); c.Label != "marketing.news" || c.Method != "rule" || c.ReplyExpected != nil {
 		t.Fatalf("classification: %+v", c)
 	}
 	if e.llm.CallCount() != 0 {
@@ -88,6 +89,24 @@ func TestClassifyJob_RulesSkipLLM(t *testing.T) {
 	}
 	if n := count(t, e.s, `SELECT count(*) FROM queue WHERE kind = ?`, KindThreadRefresh); n != 1 {
 		t.Fatalf("thread_refresh jobs = %d", n)
+	}
+}
+
+func TestClassifyJob_StoresReplyExpected(t *testing.T) {
+	e := newClassifyEnv(t, func(r llmtest.Request) llmtest.Reply {
+		var answers []llmtest.Answer
+		for _, it := range r.Items {
+			answers = append(answers, llmtest.Answer{ID: it.ID, Label: "accounting", Confidence: 0.9, ReplyExpected: new(true)})
+		}
+		return llmtest.Reply{Content: llmtest.Results(answers...), In: 100, Out: 20}
+	})
+	m := synth(mbA, 1)[0]
+	e.ingest(t, m)
+	if _, err := e.runNext(t); err != nil {
+		t.Fatal(err)
+	}
+	if c := e.label(t, m.InternetMessageID); c.ReplyExpected == nil || !*c.ReplyExpected || c.TaxonomyVersion != "v2" {
+		t.Fatalf("classification: %+v", c)
 	}
 }
 
@@ -103,6 +122,41 @@ func TestClassifyJob_FlagsReachStore(t *testing.T) {
 	_ = e.s.DB().QueryRow(`SELECT is_auto, is_bulk, is_list FROM message`).Scan(&auto, &bulk, &list)
 	if auto || !bulk || !list {
 		t.Fatalf("flags in store: auto=%v bulk=%v list=%v", auto, bulk, list)
+	}
+}
+
+func TestClassifyJob_BulkHint(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		headers []graph.Header
+		bulk    bool
+	}{
+		{"unsubscribe", []graph.Header{{Name: "List-Unsubscribe", Value: "<mailto:u@x>"}}, true},
+		{"precedence", []graph.Header{{Name: "Precedence", Value: "junk"}}, true},
+		{"human", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newClassifyEnv(t, llmtest.Label("tech.alerts", 0.9))
+			m := synth(mbA, 1)[0]
+			e.f.Headers[m.ID] = tc.headers
+			e.ingest(t, m)
+			if _, err := e.runNext(t); err != nil {
+				t.Fatal(err)
+			}
+			if c := e.label(t, m.InternetMessageID); c.Method != "llm" || c.Label != "tech.alerts" {
+				t.Fatalf("classification: %+v", c)
+			}
+			msgs := e.llm.Calls[0].Raw["messages"].([]any)
+			var payload struct {
+				Messages []map[string]any `json:"messages"`
+			}
+			if err := json.Unmarshal([]byte(msgs[1].(map[string]any)["content"].(string)), &payload); err != nil {
+				t.Fatal(err)
+			}
+			if got, ok := payload.Messages[0]["bulk"].(bool); !ok || got != tc.bulk {
+				t.Fatalf("bulk=%v, present=%v; want %v", got, ok, tc.bulk)
+			}
+		})
 	}
 }
 
@@ -309,7 +363,7 @@ func TestClassifyJob_RetryAfterPartialBatchCoversSiblings(t *testing.T) {
 		return llmtest.Label("clienti", 0.9)(r)
 	})
 	ms := synth(mbA, 2)
-	e.f.Headers[ms[0].ID] = []graph.Header{{Name: "List-Unsubscribe", Value: "<mailto:u@x>"}} // A: rule; B: LLM
+	e.f.Headers[ms[0].ID] = []graph.Header{{Name: "List-Id", Value: "<news.example>"}} // A: rule; B: LLM
 	e.ingest(t, ms...)
 	jobA, err := e.runNext(t) // A saved by rule, B's LLM call fails
 	if err == nil {

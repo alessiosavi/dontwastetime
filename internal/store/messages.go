@@ -132,6 +132,13 @@ const messageCols = `id, mailbox, graph_id, folder, direction, internet_message_
 
 type rowScanner interface{ Scan(dest ...any) error }
 
+// InboundMessage finds a gold/evaluation row by the production deduplication
+// key. Outbound-only matches are treated as missing (sql.ErrNoRows).
+func (s *Store) InboundMessage(ctx context.Context, mailbox, internetMessageID string) (MessageRow, error) {
+	return scanMessage(s.db.QueryRowContext(ctx, `SELECT `+messageCols+` FROM message
+		WHERE mailbox = ? AND internet_message_id = ? AND direction = 'in'`, mailbox, internetMessageID))
+}
+
 func scanMessage(sc rowScanner) (MessageRow, error) {
 	var r MessageRow
 	var to, cc, received, inserted string

@@ -35,6 +35,7 @@ type ThreadMessage struct {
 	IsAuto, IsBulk, IsList bool
 	Label                  string
 	Urgent, Negative       bool
+	ReplyExpected          *bool
 }
 
 // UpsertThreadFromMessage makes sure the message's thread row exists and
@@ -60,7 +61,7 @@ func (s *Store) UpsertThreadFromMessage(ctx context.Context, messageID int64, no
 func (s *Store) ThreadMessages(ctx context.Context, key string) ([]ThreadMessage, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT m.id, m.mailbox, m.direction, m.from_addr, m.subject,
 		coalesce(m.body_preview, ''), m.to_addrs, m.cc_addrs, m.received_at, m.inserted_at, m.is_auto, m.is_bulk, m.is_list,
-		coalesce(c.label, ''), coalesce(c.urgent, 0), coalesce(c.negative, 0)
+		coalesce(c.label, ''), coalesce(c.urgent, 0), coalesce(c.negative, 0), c.reply_expected
 		FROM message m LEFT JOIN classification c ON c.message_id = m.id
 		WHERE m.thread_key = ? ORDER BY m.received_at, m.id`, key)
 	if err != nil {
@@ -72,7 +73,7 @@ func (s *Store) ThreadMessages(ctx context.Context, key string) ([]ThreadMessage
 		var m ThreadMessage
 		var at, inserted, to, cc string
 		if err := rows.Scan(&m.ID, &m.Mailbox, &m.Direction, &m.From, &m.Subject, &m.Preview, &to, &cc, &at, &inserted,
-			&m.IsAuto, &m.IsBulk, &m.IsList, &m.Label, &m.Urgent, &m.Negative); err != nil {
+			&m.IsAuto, &m.IsBulk, &m.IsList, &m.Label, &m.Urgent, &m.Negative, &m.ReplyExpected); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal([]byte(to), &m.To); err != nil {

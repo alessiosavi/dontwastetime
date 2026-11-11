@@ -150,6 +150,89 @@ func TestBuild_NotificationsCountOnlyPersonalHidden(t *testing.T) {
 	}
 }
 
+func TestBuild_PersonalReplyHidden(t *testing.T) {
+	for _, stale := range []bool{false, true} {
+		t.Run(map[bool]string{false: "reply_expected", true: "stale_needs_reply"}[stale], func(t *testing.T) {
+			f := newFx(t)
+			ctx := context.Background()
+			const sender, subject = "family@private.example", "Conversazione privata"
+			when := at.Add(-49 * time.Hour)
+			id := f.add(t, "business@example.com", sender, subject, "", 49*time.Hour)
+			if err := f.s.SaveClassification(ctx, store.Classification{
+				MessageID: id, Label: labelPersonal, Confidence: 0.9, Method: "llm", ReplyExpected: new(true),
+			}, when); err != nil {
+				t.Fatal(err)
+			}
+			st, err := threads.Recompute(ctx, f.s, "c:"+subject, f.cfg, at)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stale {
+				// A digest must also hide private rows persisted before the policy fix.
+				row, err := f.s.Thread(ctx, "c:"+subject)
+				if err != nil {
+					t.Fatal(err)
+				}
+				due := when.Add(48 * time.Hour)
+				row.NeedsReply, row.ReplyDueAt = true, &due
+				if err := f.s.SaveThreadState(ctx, row, at); err != nil {
+					t.Fatal(err)
+				}
+			} else if st.NeedsReply || !st.DueAt.IsZero() {
+				t.Errorf("personal reply_expected=true opened an obligation: %+v", st)
+			}
+			d, err := Build(ctx, f.s, f.cfg, f.tx, at)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for format, body := range map[string]string{"markdown": d.Markdown, "html": d.HTML} {
+				for _, hidden := range []string{sender, subject} {
+					if strings.Contains(body, hidden) {
+						t.Errorf("%s exposes personal mail: %q", format, hidden)
+					}
+				}
+				if !strings.Contains(body, "Serve risposta (0)") {
+					t.Errorf("%s counts personal mail as needing a reply", format)
+				}
+			}
+			if strings.Contains(d.Subject, "da rispondere") {
+				t.Errorf("subject counts personal mail: %s", d.Subject)
+			}
+		})
+	}
+}
+
+func TestBuild_AccountingReplyExpectedOverdue(t *testing.T) {
+	f := newFx(t)
+	ctx := context.Background()
+	const subject = "Domanda contabile"
+	when := at.Add(-49 * time.Hour)
+	id := f.add(t, "legal@example.com", "person@accountant.example", subject, "", 49*time.Hour)
+	if err := f.s.SaveClassification(ctx, store.Classification{
+		MessageID: id, Label: "accounting", Confidence: 0.9, Method: "llm", ReplyExpected: new(true),
+	}, when); err != nil {
+		t.Fatal(err)
+	}
+	st, err := threads.Recompute(ctx, f.s, "c:"+subject, f.cfg, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !st.NeedsReply || !st.DueAt.Equal(when.Add(48*time.Hour)) {
+		t.Fatalf("accounting reply_expected=true must open a 48h obligation: %+v", st)
+	}
+	d, err := Build(ctx, f.s, f.cfg, f.tx, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for format, body := range map[string]string{"markdown": d.Markdown, "html": d.HTML} {
+		for _, want := range []string{"Serve risposta (1)", subject, "in attesa da 49 ore", "(oltre le 48h)"} {
+			if !strings.Contains(body, want) {
+				t.Errorf("%s lacks %q for overdue accounting obligation", format, want)
+			}
+		}
+	}
+}
+
 func TestBuild_HealthSection(t *testing.T) {
 	f := seed(t)
 	ctx := context.Background()

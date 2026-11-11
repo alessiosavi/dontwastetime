@@ -45,6 +45,7 @@ type mopt struct {
 	at, insertedAt                                      time.Time
 	to, cc                                              []string
 	urgent, negative, auto                              bool
+	replyExpected                                       *bool
 }
 
 // add stores one classified message and returns its row id.
@@ -75,7 +76,7 @@ func (e *env) add(t *testing.T, o mopt) int64 {
 	}
 	if o.label != "" {
 		if err := e.s.SaveClassification(context.Background(), store.Classification{MessageID: id, Label: o.label,
-			Confidence: 0.9, Urgent: o.urgent, Negative: o.negative, Method: "llm"}, o.at); err != nil {
+			Confidence: 0.9, Urgent: o.urgent, Negative: o.negative, Method: "llm", ReplyExpected: o.replyExpected}, o.at); err != nil {
 			t.Fatal(err)
 		}
 	}
