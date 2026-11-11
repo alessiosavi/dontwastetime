@@ -24,7 +24,7 @@
 <li>Mail in attesa di classificazione: {{.Health.Unclassified}}</li>
 <li>Budget classificatore: {{.Health.TokensUsed}} / {{.Health.TokensLimit}} token ({{.BudgetPct}}%){{if .Health.BudgetReached}} — <b>classificatore in pausa: budget giornaliero raggiunto</b>{{end}}</li>
 {{- if .Health.MonthlyMaxCost}}
-<li>Spesa classificatore nel mese: ${{printf "%.2f" .Health.MonthlyCost}} / ${{printf "%.2f" .Health.MonthlyMaxCost}} (stima)</li>
+<li>Spesa classificatore nel mese: ${{printf "%.2f" .Health.MonthlyCost}} / ${{printf "%.2f" .Health.MonthlyMaxCost}} (stima){{if ge .Health.MonthlyCost .Health.MonthlyMaxCost}} — <b>classificatore in pausa: budget mensile raggiunto</b>{{end}}</li>
 {{- end}}
 </ul>
 </body></html>

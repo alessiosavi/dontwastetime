@@ -19,7 +19,7 @@ import (
 // ErrBudgetReached stops every LLM stage for the rest of the budget window.
 // It lives here (not in pipeline or classify) so both can use it without an
 // import cycle.
-var ErrBudgetReached = errors.New("llm daily budget reached")
+var ErrBudgetReached = errors.New("llm budget reached (daily tokens or monthly cost)")
 
 // tsLayout is fixed-width UTC so lexical order equals time order in SQL.
 const tsLayout = "2006-01-02T15:04:05.000Z"

@@ -325,7 +325,7 @@ func TestEvalRun_BudgetStopScoresCompletedRows(t *testing.T) {
 	if llm.Calls[0].Items[0].ID != 1 || llm.Calls[0].Items[9].ID != 10 {
 		t.Fatal("production oldest-first ordering not preserved")
 	}
-	for _, want := range []string{"Accuracy: 11/11 (100.00%)", "Budget skipped: 11", "daily budget reached", "Reply precision: 10/10 (100.00%)", "Reply recall: 10/10 (100.00%)"} {
+	for _, want := range []string{"Accuracy: 11/11 (100.00%)", "Budget skipped: 11", "llm budget reached (daily tokens or monthly cost)", "Reply precision: 10/10 (100.00%)", "Reply recall: 10/10 (100.00%)"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("missing %q: %s", want, out.String())
 		}

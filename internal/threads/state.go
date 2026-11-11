@@ -197,9 +197,18 @@ func RecomputeTx(ctx context.Context, tx *sql.Tx, key string, cfg *config.Config
 		st.NeedsReply = age >= threshold || st.Priority == PriorityP0
 	}
 	if row.AckKind != "" {
-		covered := lastIn != nil && row.AckInboundAt != nil &&
-			(lastIn.ReceivedAt.Before(*row.AckInboundAt) ||
-				(lastIn.ReceivedAt.Equal(*row.AckInboundAt) && lastIn.InternetMessageID == row.AckInboundIMID))
+		// A later mailbox copy stays covered only if no distinct inbound has
+		// arrived at or after the acknowledgement's watermark.
+		covered := lastIn != nil && row.AckInboundAt != nil
+		if covered {
+			for i := range msgs {
+				m := &msgs[i]
+				if !ours(m) && m.InternetMessageID != row.AckInboundIMID && !m.ReceivedAt.Before(*row.AckInboundAt) {
+					covered = false
+					break
+				}
+			}
+		}
 		switch {
 		case covered && row.AckKind == "handled":
 			st.NeedsReply, st.DueAt, st.Priority = false, time.Time{}, ""

@@ -241,7 +241,7 @@ func (a *app) classifyCmd(ctx context.Context, limit int, out io.Writer) error {
 		switch {
 		case errors.Is(err, pipeline.ErrBudgetReached):
 			_ = a.s.Release(ctx, j.ID, a.now().Add(pipeline.BudgetWindow), a.now())
-			fmt.Fprintf(out, "processed %d jobs; stopped: llm daily budget reached\n", done)
+			fmt.Fprintf(out, "processed %d jobs; stopped: %v\n", done, pipeline.ErrBudgetReached)
 			return nil
 		case err != nil:
 			_ = a.s.Fail(ctx, j.ID, err.Error(), a.now())

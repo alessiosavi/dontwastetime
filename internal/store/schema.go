@@ -145,4 +145,24 @@ ALTER TABLE thread ADD COLUMN ack_at TEXT;
 ALTER TABLE mailbox ADD COLUMN last_sync_completed_at TEXT;
 ALTER TABLE mailbox ADD COLUMN sync_truncated INTEGER NOT NULL DEFAULT 0;
 `,
+	// 6: full-text search over retained content, maintained by every writer.
+	`
+CREATE VIRTUAL TABLE message_fts USING fts5(subject, from_name, from_addr, body_text,
+  content='message', content_rowid='id', tokenize='unicode61 remove_diacritics 2');
+CREATE TRIGGER message_fts_insert AFTER INSERT ON message BEGIN
+  INSERT INTO message_fts(rowid, subject, from_name, from_addr, body_text)
+    VALUES (new.id, new.subject, new.from_name, new.from_addr, new.body_text);
+END;
+CREATE TRIGGER message_fts_delete AFTER DELETE ON message BEGIN
+  INSERT INTO message_fts(message_fts, rowid, subject, from_name, from_addr, body_text)
+    VALUES ('delete', old.id, old.subject, old.from_name, old.from_addr, old.body_text);
+END;
+CREATE TRIGGER message_fts_update AFTER UPDATE OF subject, from_name, from_addr, body_text ON message BEGIN
+  INSERT INTO message_fts(message_fts, rowid, subject, from_name, from_addr, body_text)
+    VALUES ('delete', old.id, old.subject, old.from_name, old.from_addr, old.body_text);
+  INSERT INTO message_fts(rowid, subject, from_name, from_addr, body_text)
+    VALUES (new.id, new.subject, new.from_name, new.from_addr, new.body_text);
+END;
+INSERT INTO message_fts(message_fts) VALUES ('rebuild');
+`,
 }

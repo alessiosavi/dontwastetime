@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/alessiosavi/go-dontwastetime/internal/classify"
+	"github.com/alessiosavi/go-dontwastetime/internal/classify/llmtest"
 	"github.com/alessiosavi/go-dontwastetime/internal/config"
 	"github.com/alessiosavi/go-dontwastetime/internal/graph"
 	"github.com/alessiosavi/go-dontwastetime/internal/graph/graphtest"
@@ -149,6 +150,91 @@ func TestDoctor_ReportsOldestPendingAndBudget(t *testing.T) {
 	}
 	if !ok {
 		t.Errorf("budget reached is a warning, not red:\n%s", out.String())
+	}
+}
+
+func TestDoctor_MonthlyBudget(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cap  float64
+		want string
+	}{
+		{"below cap", 10, "[OK]   llm monthly budget: $2.00 / $10.00 this month (estimate)"},
+		{"at cap", 2, "[WARN] llm monthly budget reached: $2.00 / $2.00 this month (estimate) — classification paused until next month"},
+		{"above cap", 1, "[WARN] llm monthly budget reached: $2.00 / $1.00 this month (estimate) — classification paused until next month"},
+		{"disabled", 0, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			a := testApp(t, okExcept(), "tech@example.com")
+			ctx := context.Background()
+			a.cfg.LLM.MonthlyMaxCost = tc.cap
+			a.cfg.LLM.PriceInPerMTok, a.cfg.LLM.PriceOutPerMTok = 0.50, 1
+			for _, day := range []string{"2026-10-31", "2026-11-01", "2026-11-09", "2026-12-01"} {
+				if err := a.s.UsageAdd(ctx, day, 1_000_000, 500_000); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var out bytes.Buffer
+			if ok := a.doctor(ctx, &out); !ok {
+				t.Fatalf("monthly budget should be at most a warning:\n%s", out.String())
+			}
+			if tc.want == "" {
+				if strings.Contains(out.String(), "llm monthly budget") {
+					t.Fatalf("disabled monthly cap shown:\n%s", out.String())
+				}
+			} else if !strings.Contains(out.String(), tc.want) {
+				t.Fatalf("doctor lacks %q:\n%s", tc.want, out.String())
+			}
+		})
+	}
+}
+
+func TestClassifyCmd_BudgetDiagnostics(t *testing.T) {
+	for _, cap := range []string{"daily", "monthly"} {
+		t.Run(cap, func(t *testing.T) {
+			a := testApp(t, nil, "tech@example.com")
+			ctx := context.Background()
+			day := config.Day(now0)
+			if cap == "monthly" {
+				a.cfg.LLM.MonthlyMaxCost = 0.001
+				a.cfg.LLM.PriceInPerMTok, a.cfg.LLM.PriceOutPerMTok = 1, 1
+				day = config.Day(now0.AddDate(0, 0, -1))
+			}
+			if err := a.s.UsageAdd(ctx, day, 500, 500); err != nil {
+				t.Fatal(err)
+			}
+			fake := llmtest.New(t, llmtest.Label("clienti", 0.9))
+			a.cfg.LLM.URL = fake.URL
+			a.llm = classify.NewLLM(a.cfg.LLM, a.s, a.now)
+			id, _, err := a.s.UpsertMessage(ctx, graph.Message{
+				ID: "g", InternetMessageID: "<budget@x>", Mailbox: "tech@example.com",
+				Folder: store.FolderSentItems, From: "tech@example.com", ReceivedAt: now0,
+			}, "c:budget", now0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := a.s.Enqueue(ctx, pipeline.KindClassify, id, now0); err != nil {
+				t.Fatal(err)
+			}
+			var out bytes.Buffer
+			if err := a.classifyCmd(ctx, 0, &out); err != nil {
+				t.Fatal(err)
+			}
+			want := "llm budget reached (daily tokens or monthly cost)"
+			if got := store.ErrBudgetReached.Error(); got != want {
+				t.Errorf("budget error = %q, want %q", got, want)
+			}
+			if !strings.Contains(out.String(), "processed 0 jobs; stopped: "+want) {
+				t.Errorf("classify stop line lacks both caps: %q", out.String())
+			}
+			if n := fake.CallCount(); n != 0 {
+				t.Errorf("budget stop made %d LLM requests", n)
+			}
+			counts, err := a.s.JobCounts(ctx, pipeline.KindClassify, id)
+			if err != nil || counts["pending"] != 1 || counts["failed"] != 0 {
+				t.Fatalf("budget-stopped job must wait: counts=%v err=%v", counts, err)
+			}
+		})
 	}
 }
 

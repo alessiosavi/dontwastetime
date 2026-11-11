@@ -85,8 +85,8 @@ func (r *report) covered() int {
 
 // Run explores each mailbox's inbox over the last o.Days days and returns
 // the written report paths (one per mailbox, then the combined summary).
-// It stops at o.MaxMessages (total) and on the daily LLM budget; a budget
-// stop still writes partial reports and returns an error wrapping
+// It stops at o.MaxMessages (total) and on the daily token or monthly cost cap;
+// a budget stop still writes partial reports and returns an error wrapping
 // store.ErrBudgetReached.
 func Run(ctx context.Context, c *graph.Client, s *store.Store, l *classify.LLM, t *classify.Taxonomy, o Options, outDir string, now time.Time) ([]string, error) {
 	if o.Days <= 0 {
@@ -110,7 +110,7 @@ func Run(ctx context.Context, c *graph.Client, s *store.Store, l *classify.LLM, 
 			r.Stopped = "limite --max-messages raggiunto prima di questa casella"
 		} else if err := exploreMailbox(ctx, c, l, t, o, r, &remaining, now); err != nil {
 			if errors.Is(err, store.ErrBudgetReached) {
-				r.Stopped = "interrotto: budget LLM giornaliero raggiunto (risultati parziali)"
+				r.Stopped = "interrotto: budget LLM raggiunto (token giornalieri o costo mensile; risultati parziali)"
 				stopErr = fmt.Errorf("explore %s: %w", mb, err)
 			} else {
 				r.Err = err.Error()

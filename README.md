@@ -114,8 +114,15 @@ Every command accepts `--config`, `--state-dir`, `--env` and `--taxonomy`
   is readable at boot, `serve` exits. A single unreadable mailbox (403/429) is
   marked degraded with a reason and shown in the digest; the others keep working.
 - **Budget**: `LLM_DAILY_MAX_TOKENS` (default 2,000,000) covers every LLM stage.
-  When it is reached, classification pauses (jobs wait, nothing is lost) and the
-  digest says so. Each HTTP attempt first reserves estimated input tokens (request
+  `llm.monthly_max_cost` caps estimated USD per calendar month in Europe/Rome
+  (`0` disables it; `config.example.json` uses $10). `LLM_MONTHLY_MAX_COST`
+  overrides it. The estimate uses `llm.price_in_per_mtok` and
+  `llm.price_out_per_mtok` (USD per million input/output tokens), overridden by
+  `LLM_PRICE_IN_PER_MTOK` and `LLM_PRICE_OUT_PER_MTOK`. Prices must be finite and
+  non-negative; an enabled monthly cap requires at least one non-zero price.
+  When either cap is reached, classification pauses (jobs wait, nothing is lost)
+  until the next day or month, respectively. Doctor and the digest show usage
+  and any pause. Each HTTP attempt first reserves estimated input tokens (request
   JSON bytes / 4); successful responses replace the estimate with actual usage.
   Calls that fail or receive no answer keep their reservation, including JSON-mode
   fallback attempts.

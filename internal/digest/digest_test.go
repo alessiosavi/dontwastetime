@@ -255,16 +255,21 @@ func TestBuild_HealthSection(t *testing.T) {
 
 func TestBuild_HealthShowsMonthlySpend(t *testing.T) {
 	for _, tc := range []struct {
-		name string
-		cap  float64
+		name    string
+		cap     float64
+		spend   string
+		reached bool
 	}{
-		{"enabled", 10}, {"disabled", 0},
+		{"below cap", 10, "$2.00 / $10.00", false},
+		{"at cap", 2, "$2.00 / $2.00", true},
+		{"above cap", 1, "$2.00 / $1.00", true},
+		{"disabled", 0, "", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFx(t)
 			ctx := context.Background()
 			f.cfg.LLM.MonthlyMaxCost = tc.cap
-			f.cfg.LLM.PriceInPerMTok, f.cfg.LLM.PriceOutPerMTok = 0.30, 1.20
+			f.cfg.LLM.PriceInPerMTok, f.cfg.LLM.PriceOutPerMTok = 0.50, 1
 			for _, day := range []string{"2026-10-31", "2026-11-01", "2026-11-09", "2026-12-01"} {
 				if err := f.s.UsageAdd(ctx, day, 1_000_000, 500_000); err != nil {
 					t.Fatal(err)
@@ -276,12 +281,18 @@ func TestBuild_HealthShowsMonthlySpend(t *testing.T) {
 			}
 			for format, body := range map[string]string{"markdown": d.Markdown, "html": d.HTML} {
 				if tc.cap > 0 {
-					if !strings.Contains(body, "Spesa classificatore nel mese: $1.80 / $10.00 (stima)") {
+					if !strings.Contains(body, "Spesa classificatore nel mese: "+tc.spend+" (stima)") {
 						t.Errorf("%s lacks current-month estimated spend", format)
 					}
 				} else if strings.Contains(body, "Spesa classificatore nel mese") {
 					t.Errorf("%s shows monthly spend with disabled cap", format)
 				}
+				if got := strings.Contains(body, "classificatore in pausa: budget mensile raggiunto"); got != tc.reached {
+					t.Errorf("%s monthly pause note = %v, want %v", format, got, tc.reached)
+				}
+			}
+			if d.Health.BudgetReached {
+				t.Error("monthly spend must not report daily tokens reached")
 			}
 		})
 	}

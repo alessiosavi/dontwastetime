@@ -13,6 +13,7 @@ import (
 	"net/mail"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -34,6 +35,8 @@ const (
 // internal-ops-assistant BANNED_SENDERS).
 var bannedSenders = map[string]bool{"gm@example.com": true}
 
+var operatorName = regexp.MustCompile(`^[a-z][a-z0-9._-]{0,31}$`)
+
 // envKeys lists every env var LoadConfig reads.
 var envKeys = []string{
 	"MS_TENANT_ID", "MS_CLIENT_ID", "MS_CLIENT_SECRET",
@@ -45,6 +48,7 @@ var envKeys = []string{
 // Config is the whole runtime configuration.
 type Config struct {
 	Mailboxes          []MailboxConfig `json:"mailboxes"`
+	Operators          []string        `json:"operators"`
 	DigestRecipients   []string        `json:"digest_recipients"`
 	AlertRecipients    []string        `json:"alert_recipients"`
 	DigestSender       string          `json:"digest_sender"`
@@ -150,8 +154,8 @@ func (c *Config) applyEnv() error {
 	} {
 		if v := os.Getenv(key); v != "" {
 			f, err := strconv.ParseFloat(v, 64)
-			if err != nil || f < 0 {
-				return fmt.Errorf("config: %s: invalid %q", key, v)
+			if err != nil || f < 0 || math.IsNaN(f) || math.IsInf(f, 0) {
+				return fmt.Errorf("config: %s must be finite and non-negative: %q", key, v)
 			}
 			*dst = f
 		}
@@ -220,6 +224,19 @@ func (c *Config) validate() error {
 			return fmt.Errorf("config: mailboxes: %s poll_seconds %d outside %d..%d", mb.Address, mb.PollSeconds, MinPollSeconds, MaxPollSeconds)
 		}
 	}
+	operators := map[string]bool{}
+	for _, name := range c.Operators {
+		if !operatorName.MatchString(name) {
+			return fmt.Errorf("config: operators: invalid name %q", name)
+		}
+		if name == "cli" {
+			return errors.New("config: operators: cli is reserved")
+		}
+		if operators[name] {
+			return fmt.Errorf("config: operators: duplicate name %q", name)
+		}
+		operators[name] = true
+	}
 	if len(c.DigestRecipients) == 0 {
 		return errors.New("config: digest_recipients: required")
 	}
@@ -246,6 +263,14 @@ func (c *Config) validate() error {
 	}
 	if c.LLM.MonthlyMaxCost < 0 {
 		return errors.New("config: llm.monthly_max_cost must be non-negative")
+	}
+	for field, price := range map[string]float64{
+		"price_in_per_mtok":  c.LLM.PriceInPerMTok,
+		"price_out_per_mtok": c.LLM.PriceOutPerMTok,
+	} {
+		if price < 0 || math.IsNaN(price) || math.IsInf(price, 0) {
+			return fmt.Errorf("config: llm.%s must be finite and non-negative", field)
+		}
 	}
 	if c.LLM.MonthlyMaxCost > 0 && c.LLM.PriceInPerMTok == 0 && c.LLM.PriceOutPerMTok == 0 {
 		return errors.New("config: llm.monthly_max_cost needs price_in_per_mtok/price_out_per_mtok")
