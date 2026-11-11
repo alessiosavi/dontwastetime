@@ -2,6 +2,7 @@ package threads
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -347,7 +348,12 @@ func TestKnownClient_ExcludesOwnDomains(t *testing.T) {
 				e.cfg.TopClients = append(e.cfg.TopClients, "example.com")
 			}
 			e.add(t, mopt{thread: "c:history", folder: "sentitems", from: "business@example.com", to: []string{tc.from}, at: t0.Add(-time.Hour)})
-			known, err := knownClient(context.Background(), e.s, e.cfg, &store.ThreadMessage{From: tc.from, ReceivedAt: t0})
+			var known bool
+			err := e.s.WithTx(context.Background(), func(tx *sql.Tx) error {
+				var err error
+				known, err = knownClient(context.Background(), tx, e.cfg, &store.ThreadMessage{From: tc.from, ReceivedAt: t0})
+				return err
+			})
 			if err != nil || known != tc.want {
 				t.Fatalf("knownClient(%q) = %v, err=%v; want %v", tc.from, known, err, tc.want)
 			}
@@ -572,6 +578,41 @@ func TestRefreshHandler_ConcurrentAlertsOnce(t *testing.T) {
 	}
 }
 
+func TestRecompute_HoldsWriteLockFromReadToSave(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "dwt.db")
+	s, err := store.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	e := &env{s: s, cfg: &config.Config{}}
+	id := e.add(t, mopt{from: "mario@client.example", subject: "Contratto", label: "clienti", at: t0})
+	key, err := s.UpsertThreadFromMessage(ctx, id, t0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(0)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer other.Close()
+	var writeErr error
+	beforeSave = func() {
+		_, writeErr = other.ExecContext(ctx, `UPDATE thread SET subject = subject WHERE thread_key = ?`, key)
+	}
+	defer func() { beforeSave = nil }()
+	if _, err := Recompute(ctx, s, key, e.cfg, t0.Add(30*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if writeErr == nil || !strings.Contains(strings.ToLower(writeErr.Error()), "database is locked") {
+		t.Errorf("concurrent write inside beforeSave: got %v, want database is locked (SQLITE_BUSY)", writeErr)
+	}
+	if _, err := other.ExecContext(ctx, `UPDATE thread SET subject = subject WHERE thread_key = ?`, key); err != nil {
+		t.Fatalf("write after Recompute returned: %v", err)
+	}
+}
+
 func TestRecompute_ConcurrentSnapshotsNeverWriteStale(t *testing.T) {
 	e := newEnv(t)
 	e.add(t, mopt{from: "mario@client.example", subject: "Contratto", label: "clienti", at: t0})
@@ -580,9 +621,9 @@ func TestRecompute_ConcurrentSnapshotsNeverWriteStale(t *testing.T) {
 	done := make(chan struct{})
 	beforeSave = func() { // runs once, between the first recompute's read and write
 		beforeSave = nil
-		e.add(t, mopt{from: "mario@client.example", subject: "Re: Re", label: "clienti", at: t0.Add(2 * time.Hour)})
 		go func() {
 			defer close(done)
+			e.add(t, mopt{from: "mario@client.example", subject: "Re: Re", label: "clienti", at: t0.Add(2 * time.Hour)})
 			if _, err := Recompute(context.Background(), e.s, "c:T", e.cfg, now); err != nil {
 				t.Error(err)
 			}

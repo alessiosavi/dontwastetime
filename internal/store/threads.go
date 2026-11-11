@@ -9,6 +9,13 @@ import (
 	"time"
 )
 
+// querier is the shared database surface for standalone and transactional calls.
+type querier interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
 // ThreadRow is one thread's computed reply state.
 type ThreadRow struct {
 	ThreadKey            string
@@ -59,7 +66,16 @@ func (s *Store) UpsertThreadFromMessage(ctx context.Context, messageID int64, no
 
 // ThreadMessages returns a thread's messages oldest first.
 func (s *Store) ThreadMessages(ctx context.Context, key string) ([]ThreadMessage, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT m.id, m.mailbox, m.direction, m.from_addr, m.subject,
+	return threadMessages(ctx, s.db, key)
+}
+
+// ThreadMessagesTx is ThreadMessages inside the caller's transaction.
+func ThreadMessagesTx(ctx context.Context, tx *sql.Tx, key string) ([]ThreadMessage, error) {
+	return threadMessages(ctx, tx, key)
+}
+
+func threadMessages(ctx context.Context, q querier, key string) ([]ThreadMessage, error) {
+	rows, err := q.QueryContext(ctx, `SELECT m.id, m.mailbox, m.direction, m.from_addr, m.subject,
 		coalesce(m.body_preview, ''), m.to_addrs, m.cc_addrs, m.received_at, m.inserted_at, m.is_auto, m.is_bulk, m.is_list,
 		coalesce(c.label, ''), coalesce(c.urgent, 0), coalesce(c.negative, 0), c.reply_expected
 		FROM message m LEFT JOIN classification c ON c.message_id = m.id
@@ -97,12 +113,21 @@ func (s *Store) ThreadMessages(ctx context.Context, key string) ([]ThreadMessage
 // before `before`, addressed recipient in To or Cc. recipient is either an exact
 // domain or a full address; both comparisons are case-insensitive.
 func (s *Store) HasOutboundTo(ctx context.Context, recipient string, before time.Time) (bool, error) {
+	return hasOutboundTo(ctx, s.db, recipient, before)
+}
+
+// HasOutboundToTx is HasOutboundTo inside the caller's transaction.
+func HasOutboundToTx(ctx context.Context, tx *sql.Tx, recipient string, before time.Time) (bool, error) {
+	return hasOutboundTo(ctx, tx, recipient, before)
+}
+
+func hasOutboundTo(ctx context.Context, q querier, recipient string, before time.Time) (bool, error) {
 	match := `lower(substr(value, instr(value, '@') + 1)) = ?`
 	if strings.Contains(recipient, "@") {
 		match = `lower(value) = ?`
 	}
 	var known bool
-	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (
+	err := q.QueryRowContext(ctx, `SELECT EXISTS (
 		SELECT 1 FROM message m WHERE m.direction = 'out' AND m.received_at < ?
 		AND EXISTS (SELECT 1 FROM (
 			SELECT value FROM json_each(m.to_addrs)
@@ -138,7 +163,16 @@ func scanThread(sc rowScanner) (ThreadRow, error) {
 
 // Thread loads one thread row.
 func (s *Store) Thread(ctx context.Context, key string) (ThreadRow, error) {
-	r, err := scanThread(s.db.QueryRowContext(ctx, `SELECT `+threadCols+` FROM thread WHERE thread_key = ?`, key))
+	return thread(ctx, s.db, key)
+}
+
+// ThreadTx is Thread inside the caller's transaction.
+func ThreadTx(ctx context.Context, tx *sql.Tx, key string) (ThreadRow, error) {
+	return thread(ctx, tx, key)
+}
+
+func thread(ctx context.Context, q querier, key string) (ThreadRow, error) {
+	r, err := scanThread(q.QueryRowContext(ctx, `SELECT `+threadCols+` FROM thread WHERE thread_key = ?`, key))
 	if err != nil {
 		return r, fmt.Errorf("store: thread %q: %w", key, err)
 	}
@@ -148,7 +182,16 @@ func (s *Store) Thread(ctx context.Context, key string) (ThreadRow, error) {
 // SaveThreadState writes the computed columns (mute and alert state are
 // owned by MuteThread / MarkP0Alerted and left alone).
 func (s *Store) SaveThreadState(ctx context.Context, r ThreadRow, now time.Time) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO thread(thread_key, mailbox, subject, last_inbound_at, last_outbound_at,
+	return saveThreadState(ctx, s.db, r, now)
+}
+
+// SaveThreadStateTx is SaveThreadState inside the caller's transaction.
+func SaveThreadStateTx(ctx context.Context, tx *sql.Tx, r ThreadRow, now time.Time) error {
+	return saveThreadState(ctx, tx, r, now)
+}
+
+func saveThreadState(ctx context.Context, q querier, r ThreadRow, now time.Time) error {
+	_, err := q.ExecContext(ctx, `INSERT INTO thread(thread_key, mailbox, subject, last_inbound_at, last_outbound_at,
 		last_inbound_from, last_inbound_message_id, needs_reply, reply_due_at, priority, cassetto, updated_at)
 		VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(thread_key) DO UPDATE SET mailbox = excluded.mailbox, subject = excluded.subject,
