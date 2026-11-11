@@ -13,7 +13,6 @@ import (
 	"github.com/alessiosavi/go-dontwastetime/internal/classify"
 	"github.com/alessiosavi/go-dontwastetime/internal/config"
 	"github.com/alessiosavi/go-dontwastetime/internal/store"
-	"github.com/alessiosavi/go-dontwastetime/internal/threads"
 )
 
 const (
@@ -145,7 +144,7 @@ func Build(ctx context.Context, s *store.Store, cfg *config.Config, t *classify.
 		return nil, err
 	}
 	for _, r := range open {
-		if !digestOn[r.Mailbox] || r.LastInboundAt == nil {
+		if !digestOn[r.Mailbox] || r.LastInboundAt == nil || r.Cassetto == labelPersonal {
 			continue
 		}
 		row := replyRow{ID: r.LastInboundMessageID, Label: t.Title(r.Cassetto), From: r.LastInboundFrom, Subject: r.Subject, Mailbox: r.Mailbox,
@@ -153,9 +152,10 @@ func Build(ctx context.Context, s *store.Store, cfg *config.Config, t *classify.
 		if r.Priority != "" {
 			row.Label = r.Priority + " · " + row.Label
 		}
-		if th, ok := threads.Threshold(r.Cassetto); ok {
+		if r.ReplyDueAt != nil {
+			th := r.ReplyDueAt.Sub(*r.LastInboundAt)
 			row.Threshold = fmt.Sprintf("%dh", int(th.Hours()))
-			row.Overdue = r.ReplyDueAt != nil && !at.Before(*r.ReplyDueAt)
+			row.Overdue = !at.Before(*r.ReplyDueAt)
 		}
 		v.NeedsReply = append(v.NeedsReply, row)
 	}

@@ -72,6 +72,55 @@ func TestReplyDecision_ExplicitAndFallback(t *testing.T) {
 	}
 }
 
+func TestReplyDecision_NeverReplyLabels(t *testing.T) {
+	for _, label := range []string{"personal", "notifications", "marketing.news", "tech.alerts"} {
+		t.Run(label, func(t *testing.T) {
+			for _, reply := range []*bool{nil, new(true), new(false)} {
+				m := store.ThreadMessage{From: "person@external.example", ReplyExpected: reply}
+				if ReplyDecision(label, &m) {
+					t.Errorf("excluded label opened an obligation with reply_expected=%v", reply)
+				}
+			}
+		})
+	}
+}
+
+func TestRecompute_NeverReplyLabels(t *testing.T) {
+	for _, label := range []string{"personal", "notifications", "marketing.news", "tech.alerts"} {
+		for _, existing := range []bool{false, true} {
+			t.Run(label+map[bool]string{false: "/fresh", true: "/existing"}[existing], func(t *testing.T) {
+				e := newEnv(t)
+				ctx := context.Background()
+				e.add(t, mopt{from: "person@external.example", subject: "Info", label: label, at: t0, replyExpected: new(true)})
+				if existing {
+					due := t0.Add(24 * time.Hour)
+					if err := e.s.SaveThreadState(ctx, store.ThreadRow{
+						ThreadKey: "c:T", Mailbox: "business@example.com", Cassetto: label,
+						LastInboundAt: &t0, NeedsReply: true, ReplyDueAt: &due, Priority: PriorityP0,
+					}, t0); err != nil {
+						t.Fatal(err)
+					}
+				}
+				st := e.status(t, "c:T", t0.Add(100*time.Hour))
+				if st.NeedsReply || !st.DueAt.IsZero() || st.Priority != "" {
+					t.Errorf("excluded label has an obligation: %+v", st)
+				}
+				row, err := e.s.Thread(ctx, "c:T")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if row.NeedsReply || row.ReplyDueAt != nil || row.Priority != "" {
+					t.Errorf("persisted obligation was not cleared: %+v", row)
+				}
+				rows, err := e.s.ListNeedsReply(ctx)
+				if err != nil || len(rows) != 0 {
+					t.Errorf("needs-reply rows=%d, err=%v; want none", len(rows), err)
+				}
+			})
+		}
+	}
+}
+
 func TestRecompute_ReplyExpectedSLA(t *testing.T) {
 	for _, tc := range []struct {
 		label string

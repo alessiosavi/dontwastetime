@@ -40,6 +40,12 @@ var thresholds = map[string]time.Duration{
 	"eventi.post": 48 * time.Hour, "admin.requests": 48 * time.Hour,
 }
 
+// neverReplyLabels protects personal mail's privacy and keeps count-only or
+// automated categories from opening obligations, even with an explicit LLM true.
+var neverReplyLabels = map[string]struct{}{
+	"personal": {}, "notifications": {}, "marketing.news": {}, "tech.alerts": {},
+}
+
 var (
 	urgencyRe  = regexp.MustCompile(`(?i)\b(urgente|urgent|entro|asap|scadenza|bloccante)\b`)
 	questionRe = regexp.MustCompile(`(?i)\?|\b(rinnov\w*|contratt\w*|offert\w*|preventiv\w*|propost\w*|riunione|meeting|call|possiamo|potete|potresti|quando)\b`)
@@ -171,6 +177,9 @@ func priority(m *store.ThreadMessage, known bool, age time.Duration) string {
 // excluded so evaluation can measure the classification's reply decision.
 func ReplyDecision(label string, m *store.ThreadMessage) bool {
 	if m == nil || suppressed(m) {
+		return false
+	}
+	if _, excluded := neverReplyLabels[label]; excluded {
 		return false
 	}
 	if m.ReplyExpected != nil {
@@ -328,7 +337,7 @@ func alertMailbox(cfg *config.Config, address string) bool {
 }
 
 // Threshold is the configured SLA of a label; ok=false means no label fallback.
-// An explicit reply_expected=true still opens an obligation with a 48h SLA.
+// Without a label fallback, eligible reply_expected=true messages use a 48h SLA.
 func Threshold(label string) (time.Duration, bool) {
 	d, ok := thresholds[label]
 	return d, ok
