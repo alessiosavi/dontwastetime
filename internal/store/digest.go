@@ -2,10 +2,27 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 )
+
+// LastDigest returns the newest saved digest's date and delivery reservation.
+// Empty date and nil sentAt mean no digest has been recorded yet.
+func (s *Store) LastDigest(ctx context.Context) (day string, sentAt *time.Time, err error) {
+	var sent sql.NullString
+	err = s.db.QueryRowContext(ctx, `SELECT date, sent_at FROM digest ORDER BY date DESC LIMIT 1`).Scan(&day, &sent)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil, nil
+	}
+	if err != nil {
+		return "", nil, fmt.Errorf("store: last digest: %w", err)
+	}
+	sentAt, err = scanTS(sent)
+	return day, sentAt, err
+}
 
 // RecordDigest stores (or replaces) the day's digest row. sentAt nil means a
 // dry run: rendered and saved, not sent. An existing delivery timestamp is
