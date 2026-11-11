@@ -31,11 +31,15 @@ subdomains) are classified as notifications and never need a reply. Mail first
 stored more than 14 days after receipt does not open a reply obligation; a later
 fresh inbound in the same thread is tracked normally.
 
-Each classification stores nullable `reply_expected` from the LLM: true opens an obligation unless
-the message is suppressed (automatic, bulk/list, no-reply or receipt headers and
-subjects); false never opens one. Missing or malformed values, rule classifications
-and existing rows use the tracked-label fallback. The SLA is the label's threshold
-when tracked, otherwise 48 hours. `dwt correct` preserves this decision.
+Each classification stores nullable `reply_expected` from the LLM. Suppressed
+messages (automatic, bulk/list, no-reply or receipt headers and subjects) and the
+labels `personal`, `notifications`, `marketing.news` and `tech.alerts` never open
+an obligation, whatever the model answers. For other messages, urgent or negative
+`clienti` mail always opens an obligation, even with `reply_expected:false`.
+Otherwise, true opens an obligation and false does not. Missing or malformed
+values, rule classifications and existing rows use the tracked-label fallback.
+The SLA is the label's threshold when tracked, otherwise 48 hours.
+`dwt correct` preserves this decision.
 
 State lives in `~/Library/Application Support/dontwastetime/` (override with
 `state_dir`, `DWT_STATE_DIR` or `--state-dir`): `dwt.db`, `digests/`,
