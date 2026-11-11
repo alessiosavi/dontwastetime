@@ -82,6 +82,18 @@ func (a *app) doctor(ctx context.Context, out io.Writer) bool {
 	default:
 		line("OK", "llm budget: %d / %d tokens today", in+outTok, cfg.LLM.DailyMaxTokens)
 	}
+	if cfg.LLM.MonthlyMaxCost > 0 {
+		in, outTok, err := a.s.UsageMonth(ctx, config.Month(now))
+		cost := cfg.LLM.Cost(in, outTok)
+		switch {
+		case err != nil:
+			line("RED", "llm monthly budget: %v", err)
+		case cost >= cfg.LLM.MonthlyMaxCost:
+			line("WARN", "llm monthly budget reached: $%.2f / $%.2f this month (estimate) — classification paused until next month", cost, cfg.LLM.MonthlyMaxCost)
+		default:
+			line("OK", "llm monthly budget: $%.2f / $%.2f this month (estimate)", cost, cfg.LLM.MonthlyMaxCost)
+		}
+	}
 
 	var total, unsure int
 	_ = a.s.DB().QueryRowContext(ctx, `SELECT count(*), coalesce(sum(label = 'unsure'), 0) FROM classification

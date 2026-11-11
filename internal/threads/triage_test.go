@@ -116,6 +116,55 @@ func TestMarkHandled_OtherCopyAndOlderBackfillStayHandled(t *testing.T) {
 	}
 }
 
+func TestTriage_LaterMailboxCopyStaysAcknowledged(t *testing.T) {
+	for _, kind := range []string{"handled", "snoozed"} {
+		t.Run(kind, func(t *testing.T) {
+			e := newEnv(t)
+			ctx := context.Background()
+			id := e.add(t, mopt{from: "a@bigbrand.example", label: "clienti", at: t0})
+			now := t0.Add(30 * time.Hour)
+			e.status(t, "c:T", now)
+			applyTriage(t, e, now, func(tx *sql.Tx) error {
+				if kind == "snoozed" {
+					return store.SnoozeTx(ctx, tx, "c:T", id, now.Add(24*time.Hour), "operator", now)
+				}
+				return store.MarkHandledTx(ctx, tx, "c:T", id, "operator", "", now)
+			})
+			m, err := e.s.Message(ctx, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			copy := m.Graph()
+			copy.Mailbox, copy.ID = "person.one@example.com", "later-copy"
+			copy.ReceivedAt = t0.Add(time.Minute)
+			copyID, _, err := e.s.UpsertMessage(ctx, copy, "c:T", now)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := e.s.SaveClassification(ctx, store.Classification{MessageID: copyID, Label: "clienti", Method: "llm"}, now); err != nil {
+				t.Fatal(err)
+			}
+			st := e.status(t, "c:T", now)
+			r := triageRow(t, e)
+			if r.LastInboundMessageID != copyID {
+				t.Fatalf("test requires the later mailbox copy as last inbound: %+v", r)
+			}
+			if StateOf(r, now) != kind || st.NeedsReply || r.AckInboundIMID != m.InternetMessageID ||
+				r.AckInboundAt == nil || !r.AckInboundAt.Equal(t0) {
+				t.Fatalf("later copy reopened %s mail: status=%+v row=%+v", kind, st, r)
+			}
+			// A distinct mail at exactly the copy's timestamp must reopen it.
+			newID := e.add(t, mopt{from: "a@bigbrand.example", label: "clienti", at: copy.ReceivedAt, insertedAt: now})
+			e.status(t, "c:T", now)
+			r = triageRow(t, e)
+			if StateOf(r, now) != "overdue" || r.LastInboundMessageID != newID {
+				t.Fatalf("different imid at the same timestamp did not reopen %s mail: %+v", kind, r)
+			}
+			assertNoAck(t, r)
+		})
+	}
+}
+
 func TestMarkHandled_StaleInboundRefused(t *testing.T) {
 	for _, delta := range []time.Duration{0, time.Hour} {
 		for _, snooze := range []bool{false, true} {

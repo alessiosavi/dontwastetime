@@ -150,8 +150,8 @@ func (c *Config) applyEnv() error {
 	} {
 		if v := os.Getenv(key); v != "" {
 			f, err := strconv.ParseFloat(v, 64)
-			if err != nil || f < 0 {
-				return fmt.Errorf("config: %s: invalid %q", key, v)
+			if err != nil || f < 0 || math.IsNaN(f) || math.IsInf(f, 0) {
+				return fmt.Errorf("config: %s must be finite and non-negative: %q", key, v)
 			}
 			*dst = f
 		}
@@ -246,6 +246,14 @@ func (c *Config) validate() error {
 	}
 	if c.LLM.MonthlyMaxCost < 0 {
 		return errors.New("config: llm.monthly_max_cost must be non-negative")
+	}
+	for field, price := range map[string]float64{
+		"price_in_per_mtok":  c.LLM.PriceInPerMTok,
+		"price_out_per_mtok": c.LLM.PriceOutPerMTok,
+	} {
+		if price < 0 || math.IsNaN(price) || math.IsInf(price, 0) {
+			return fmt.Errorf("config: llm.%s must be finite and non-negative", field)
+		}
 	}
 	if c.LLM.MonthlyMaxCost > 0 && c.LLM.PriceInPerMTok == 0 && c.LLM.PriceOutPerMTok == 0 {
 		return errors.New("config: llm.monthly_max_cost needs price_in_per_mtok/price_out_per_mtok")

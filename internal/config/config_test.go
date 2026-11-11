@@ -4,6 +4,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -245,5 +246,78 @@ func TestConfig_MoneyCapEnvOverride(t *testing.T) {
 				t.Fatalf("monthly cap = %v, want %v", cfg.LLM.MonthlyMaxCost, tc.want)
 			}
 		})
+	}
+}
+
+func TestConfig_PricesJSON(t *testing.T) {
+	clearEnv(t)
+	for _, field := range []string{"price_in_per_mtok", "price_out_per_mtok"} {
+		for _, value := range []string{"-0.30", "0", "0.30"} {
+			t.Run(field+"/"+value, func(t *testing.T) {
+				body := strings.Replace(minimalJSON, `"digest_sender"`, `"llm":{"`+field+`":`+value+`},"digest_sender"`, 1)
+				_, err := LoadConfig(writeFile(t, "config.json", body))
+				if value == "-0.30" {
+					if err == nil || !strings.Contains(err.Error(), "llm."+field) {
+						t.Fatalf("negative JSON price must be rejected naming %s, got %v", field, err)
+					}
+				} else if err != nil {
+					t.Fatalf("valid JSON price rejected: %v", err)
+				}
+			})
+		}
+	}
+}
+
+func TestConfig_PricesEnv(t *testing.T) {
+	clearEnv(t)
+	p := writeFile(t, "config.json", minimalJSON)
+	for _, key := range []string{"LLM_PRICE_IN_PER_MTOK", "LLM_PRICE_OUT_PER_MTOK"} {
+		for _, value := range []string{"-0.30", "NaN", "Inf", "+Inf", "-Inf", "bad", "0", "0.30"} {
+			t.Run(key+"/"+value, func(t *testing.T) {
+				t.Setenv(key, value)
+				cfg, err := LoadConfig(p)
+				if value != "0" && value != "0.30" {
+					if err == nil || !strings.Contains(err.Error(), key) {
+						t.Fatalf("invalid env price must be rejected naming %s, got %v", key, err)
+					}
+				} else if err != nil {
+					t.Fatalf("valid env price rejected: %v", err)
+				} else {
+					got := cfg.LLM.PriceInPerMTok
+					if key == "LLM_PRICE_OUT_PER_MTOK" {
+						got = cfg.LLM.PriceOutPerMTok
+					}
+					want := 0.0
+					if value == "0.30" {
+						want = 0.30
+					}
+					if got != want {
+						t.Fatalf("env price = %v, want %v", got, want)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestConfig_ValidatePrices(t *testing.T) {
+	clearEnv(t)
+	for _, field := range []string{"price_in_per_mtok", "price_out_per_mtok"} {
+		for _, value := range []float64{-0.30, math.NaN(), math.Inf(1), math.Inf(-1)} {
+			t.Run(field+"/"+strconv.FormatFloat(value, 'g', -1, 64), func(t *testing.T) {
+				cfg, err := LoadConfig(writeFile(t, "config.json", minimalJSON))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if field == "price_in_per_mtok" {
+					cfg.LLM.PriceInPerMTok = value
+				} else {
+					cfg.LLM.PriceOutPerMTok = value
+				}
+				if err := cfg.validate(); err == nil || !strings.Contains(err.Error(), "llm."+field) {
+					t.Fatalf("invalid price must fail validation naming %s, got %v", field, err)
+				}
+			})
+		}
 	}
 }

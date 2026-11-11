@@ -37,5 +37,5 @@ Niente da classificare a mano.
 - Mail in attesa di classificazione: {{.Health.Unclassified}}
 - Budget classificatore: {{.Health.TokensUsed}} / {{.Health.TokensLimit}} token ({{.BudgetPct}}%){{if .Health.BudgetReached}} — classificatore in pausa: budget giornaliero raggiunto{{end}}
 {{- if .Health.MonthlyMaxCost}}
-- Spesa classificatore nel mese: ${{printf "%.2f" .Health.MonthlyCost}} / ${{printf "%.2f" .Health.MonthlyMaxCost}} (stima)
+- Spesa classificatore nel mese: ${{printf "%.2f" .Health.MonthlyCost}} / ${{printf "%.2f" .Health.MonthlyMaxCost}} (stima){{if ge .Health.MonthlyCost .Health.MonthlyMaxCost}} — classificatore in pausa: budget mensile raggiunto{{end}}
 {{- end}}

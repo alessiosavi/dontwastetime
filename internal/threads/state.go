@@ -197,9 +197,10 @@ func RecomputeTx(ctx context.Context, tx *sql.Tx, key string, cfg *config.Config
 		st.NeedsReply = age >= threshold || st.Priority == PriorityP0
 	}
 	if row.AckKind != "" {
+		// Copies of acknowledged mail remain covered even when another mailbox
+		// records a later received_at for the same internet message id.
 		covered := lastIn != nil && row.AckInboundAt != nil &&
-			(lastIn.ReceivedAt.Before(*row.AckInboundAt) ||
-				(lastIn.ReceivedAt.Equal(*row.AckInboundAt) && lastIn.InternetMessageID == row.AckInboundIMID))
+			(lastIn.ReceivedAt.Before(*row.AckInboundAt) || lastIn.InternetMessageID == row.AckInboundIMID)
 		switch {
 		case covered && row.AckKind == "handled":
 			st.NeedsReply, st.DueAt, st.Priority = false, time.Time{}, ""
