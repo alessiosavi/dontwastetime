@@ -8,6 +8,7 @@ package graph
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -71,11 +72,13 @@ type noAnswerError struct{ err error }
 func (e *noAnswerError) Error() string { return e.err.Error() }
 func (e *noAnswerError) Unwrap() error { return e.err }
 
-// neverSent: the connection was never established, so the request cannot
-// have reached Graph.
+// neverSent: the request cannot have reached Graph — the connection was never
+// established, or the server's certificate was rejected during the TLS
+// handshake (which net/http completes before writing the request).
 func (e *noAnswerError) neverSent() bool {
 	var op *net.OpError
-	return errors.As(e.err, &op) && op.Op == "dial"
+	var cv *tls.CertificateVerificationError
+	return (errors.As(e.err, &op) && op.Op == "dial") || errors.As(e.err, &cv)
 }
 
 // Client is safe for concurrent use.

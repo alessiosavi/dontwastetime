@@ -263,11 +263,11 @@ func TestRetryDigest_ReenqueuesDeadLetteredToday(t *testing.T) {
 
 	a := testApp(t, nil)
 	deadLetter(a)
-	a.retryDigest(ctx, now)
+	a.retryDigest(ctx, now, false)
 	if j := claim(a); j == nil || j.Ref != run.Unix() || j.Attempts != 0 {
 		t.Fatalf("dead-lettered digest not re-enqueued: %+v", j)
 	}
-	a.retryDigest(ctx, now) // the new job is running: no duplicate
+	a.retryDigest(ctx, now, false) // the new job is running: no duplicate
 	if j := claim(a); j != nil {
 		t.Fatalf("duplicate digest job %+v", j)
 	}
@@ -277,8 +277,50 @@ func TestRetryDigest_ReenqueuesDeadLetteredToday(t *testing.T) {
 	if ok, err := sent.s.ClaimDigestSend(ctx, config.Day(run), "p", []string{"x@example.com"}, "{}", now); err != nil || !ok {
 		t.Fatalf("mark sent: %v %v", ok, err)
 	}
-	sent.retryDigest(ctx, now)
+	sent.retryDigest(ctx, now, false)
 	if j := claim(sent); j != nil {
 		t.Fatalf("a sent day must not be re-enqueued: %+v", j)
+	}
+}
+
+func TestRetryDigest_DoneWithoutDelivery(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 11, 11, 10, 0, 0, 0, config.Rome)
+	run := todaysRun(now)
+	// A job completed without delivering (it no-oped while a sibling held the
+	// claim, and the sibling was later rejected and dead-lettered).
+	setup := func() *app {
+		a := testApp(t, nil)
+		if err := a.s.Enqueue(ctx, pipeline.KindDigest, run.Unix(), now); err != nil {
+			t.Fatal(err)
+		}
+		j, err := a.s.Claim(ctx, []string{pipeline.KindDigest}, now)
+		if err != nil || j == nil {
+			t.Fatalf("claim: %v %v", j, err)
+		}
+		if err := a.s.Complete(ctx, j.ID, now); err != nil {
+			t.Fatal(err)
+		}
+		return a
+	}
+	claim := func(a *app) *store.Job {
+		t.Helper()
+		j, err := a.s.Claim(ctx, []string{pipeline.KindDigest}, now.Add(time.Hour))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return j
+	}
+
+	live := setup()
+	live.retryDigest(ctx, now, false)
+	if j := claim(live); j == nil || j.Ref != run.Unix() {
+		t.Fatalf("live: an unsent day with no pending job must be re-enqueued, got %+v", j)
+	}
+
+	dry := setup()
+	dry.retryDigest(ctx, now, true)
+	if j := claim(dry); j != nil {
+		t.Fatalf("dry run: a finished preview must not be re-run: %+v", j)
 	}
 }

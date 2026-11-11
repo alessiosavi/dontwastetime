@@ -163,6 +163,20 @@ func TestSendMail_DeliveryUnknownOnlyWithoutAnswer(t *testing.T) {
 		t.Fatalf("connection refused: err = %v, want a definite failure", err)
 	}
 
+	// Untrusted TLS certificate (e.g. an intercepting proxy): the handshake
+	// fails before the request is written.
+	var tlsCalls atomic.Int32
+	untrusted := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		tlsCalls.Add(1)
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	t.Cleanup(untrusted.Close)
+	_, proxied, _ := newFake(t, nil)
+	proxied.baseURL = untrusted.URL + "/v1.0"
+	if err := send(ctx, proxied); err == nil || errors.Is(err, ErrDeliveryUnknown) || tlsCalls.Load() != 0 {
+		t.Fatalf("TLS verification failure: err = %v (calls %d), want a definite failure", err, tlsCalls.Load())
+	}
+
 	// Context already cancelled (token cached): the request never left.
 	_, warm, _ := newFake(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusAccepted) })
 	if err := send(ctx, warm); err != nil {

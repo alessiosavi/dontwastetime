@@ -126,7 +126,7 @@ func (a *app) schedule(ctx context.Context, dryRun bool) {
 			if err := threads.Sweep(ctx, a.s, a.cfg, a.alerter(dryRun), now); err != nil {
 				logger().Warn("thread sweep", "err", err)
 			}
-			a.retryDigest(ctx, now)
+			a.retryDigest(ctx, now, dryRun)
 			nextSweep = now.Add(sweepEvery)
 		}
 		if !now.Before(nextVerify) {
@@ -149,11 +149,13 @@ func (a *app) schedule(ctx context.Context, dryRun bool) {
 	}
 }
 
-// retryDigest re-enqueues today's due digest when it is not sent and its
-// latest job dead-lettered (or none exists): a daemon that keeps running must
-// not lose the day's digest to a burst of send failures. A claimed day
-// (including a send that got no answer) and a finished dry run are left alone.
-func (a *app) retryDigest(ctx context.Context, now time.Time) {
+// retryDigest re-enqueues today's due digest when it is unsent and no job
+// for it is pending or running: a daemon that keeps running must not lose the
+// day's digest to a burst of send failures, nor to a job that finished
+// without delivering (it no-oped while a sibling held the claim that was later
+// given back). A claimed day (including a send that got no answer) is left
+// alone; in a dry run a finished preview counts as handled.
+func (a *app) retryDigest(ctx context.Context, now time.Time, dryRun bool) {
 	run := todaysRun(now)
 	if run.IsZero() {
 		return
@@ -162,15 +164,15 @@ func (a *app) retryDigest(ctx context.Context, now time.Time) {
 	if err != nil || sent {
 		return
 	}
-	status, err := a.s.LatestJobStatus(ctx, pipeline.KindDigest, run.Unix())
+	jobs, err := a.s.JobCounts(ctx, pipeline.KindDigest, run.Unix())
 	if err != nil {
 		logger().Warn("digest retry check", "err", err)
 		return
 	}
-	if status != "" && status != "failed" {
+	if jobs["pending"]+jobs["running"] > 0 || (dryRun && jobs["done"] > 0) {
 		return
 	}
-	logger().Warn("re-enqueueing today's unsent digest", "at", run, "previous_job", orDash(status))
+	logger().Warn("re-enqueueing today's unsent digest", "at", run, "failed_jobs", jobs["failed"], "done_jobs", jobs["done"])
 	_ = a.enqueueDigest(ctx, run)
 }
 

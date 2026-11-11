@@ -132,19 +132,24 @@ func (s *Store) QueueDepth(ctx context.Context, now time.Time) (pending, failed,
 	return pending, failed, oldestPendingSeconds, nil
 }
 
-// LatestJobStatus is the status of the newest job for (kind, ref); "" when
-// there is none.
-func (s *Store) LatestJobStatus(ctx context.Context, kind string, ref int64) (string, error) {
-	var status string
-	err := s.db.QueryRowContext(ctx, `SELECT status FROM queue WHERE kind = ? AND ref = ? ORDER BY id DESC LIMIT 1`,
-		kind, ref).Scan(&status)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
-	}
+// JobCounts counts the jobs for (kind, ref) by status (pending, running,
+// done, failed); absent statuses are zero.
+func (s *Store) JobCounts(ctx context.Context, kind string, ref int64) (map[string]int, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT status, count(*) FROM queue WHERE kind = ? AND ref = ? GROUP BY status`, kind, ref)
 	if err != nil {
-		return "", fmt.Errorf("store: latest job: %w", err)
+		return nil, fmt.Errorf("store: job counts: %w", err)
 	}
-	return status, nil
+	defer rows.Close()
+	counts := map[string]int{}
+	for rows.Next() {
+		var status string
+		var n int
+		if err := rows.Scan(&status, &n); err != nil {
+			return nil, fmt.Errorf("store: job counts: %w", err)
+		}
+		counts[status] = n
+	}
+	return counts, rows.Err()
 }
 
 func (s *Store) setJob(ctx context.Context, q string, args ...any) error {
