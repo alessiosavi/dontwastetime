@@ -10,6 +10,7 @@
     {"address": "person.two@example.com", "enabled": true, "digest": true},
     {"address": "employee.example@example.com", "enabled": true, "digest": false}
   ],
+  "operators": ["operator", "founder"],
   "digest_recipients": ["founder@example.com", "person.two@example.com"],
   "digest_sender": "admin@example.com",
   "top_clients": ["client-one.example", "client-two.example"],

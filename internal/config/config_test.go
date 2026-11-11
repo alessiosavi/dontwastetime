@@ -16,6 +16,41 @@ const minimalJSON = `{
   "digest_sender": "admin@example.com"
 }`
 
+func TestConfig_OperatorNames(t *testing.T) {
+	clearEnv(t)
+	for _, tc := range []struct {
+		name, operators, wantErr string
+	}{
+		{"omitted", "", ""},
+		{"empty", `[]`, ""},
+		{"valid", `["operator","founder","a","a.b_c-9","a` + strings.Repeat("0", 31) + `"]`, ""},
+		{"reserved", `["cli"]`, "reserved"},
+		{"duplicate", `["operator","operator"]`, "duplicate"},
+		{"blank", `[""]`, "invalid"},
+		{"uppercase", `["Operator"]`, "invalid"},
+		{"leading digit", `["1operator"]`, "invalid"},
+		{"space", `[" operator"]`, "invalid"},
+		{"punctuation", `["operator/agent"]`, "invalid"},
+		{"unicode", `["màrtina"]`, "invalid"},
+		{"too long", `["a` + strings.Repeat("0", 32) + `"]`, "invalid"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := minimalJSON
+			if tc.operators != "" {
+				body = strings.Replace(body, `"digest_sender"`, `"operators": `+tc.operators+`, "digest_sender"`, 1)
+			}
+			_, err := LoadConfig(writeFile(t, "config.json", body))
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("valid operators rejected: %v", err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), "operators") || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("want operators error containing %q, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}
+
 func writeFile(t *testing.T, name, body string) string {
 	t.Helper()
 	p := filepath.Join(t.TempDir(), name)

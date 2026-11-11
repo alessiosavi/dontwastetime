@@ -13,6 +13,7 @@ import (
 	"net/mail"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -34,6 +35,8 @@ const (
 // internal-ops-assistant BANNED_SENDERS).
 var bannedSenders = map[string]bool{"gm@example.com": true}
 
+var operatorName = regexp.MustCompile(`^[a-z][a-z0-9._-]{0,31}$`)
+
 // envKeys lists every env var LoadConfig reads.
 var envKeys = []string{
 	"MS_TENANT_ID", "MS_CLIENT_ID", "MS_CLIENT_SECRET",
@@ -45,6 +48,7 @@ var envKeys = []string{
 // Config is the whole runtime configuration.
 type Config struct {
 	Mailboxes          []MailboxConfig `json:"mailboxes"`
+	Operators          []string        `json:"operators"`
 	DigestRecipients   []string        `json:"digest_recipients"`
 	AlertRecipients    []string        `json:"alert_recipients"`
 	DigestSender       string          `json:"digest_sender"`
@@ -219,6 +223,19 @@ func (c *Config) validate() error {
 		if mb.PollSeconds < MinPollSeconds || mb.PollSeconds > MaxPollSeconds {
 			return fmt.Errorf("config: mailboxes: %s poll_seconds %d outside %d..%d", mb.Address, mb.PollSeconds, MinPollSeconds, MaxPollSeconds)
 		}
+	}
+	operators := map[string]bool{}
+	for _, name := range c.Operators {
+		if !operatorName.MatchString(name) {
+			return fmt.Errorf("config: operators: invalid name %q", name)
+		}
+		if name == "cli" {
+			return errors.New("config: operators: cli is reserved")
+		}
+		if operators[name] {
+			return fmt.Errorf("config: operators: duplicate name %q", name)
+		}
+		operators[name] = true
 	}
 	if len(c.DigestRecipients) == 0 {
 		return errors.New("config: digest_recipients: required")
