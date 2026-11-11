@@ -1,6 +1,7 @@
 # secrets and local config — never committed
 .env
 config.json
+config.json.bak
 # local state / build output
 bin/
 *.db
