@@ -53,7 +53,7 @@ type Store struct{ db *sql.DB }
 
 // Open opens (creating if needed) the state file and applies migrations.
 func Open(path string) (*Store, error) {
-	dsn := path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_txlock=immediate"
+	dsn := path + "?_pragma=busy_timeout(15000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)&_txlock=immediate"
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("store: open: %w", err)
