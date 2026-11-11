@@ -33,9 +33,13 @@ func addTool[In, Out any](s *mcp.Server, name, description string, readOnly bool
 		func(ctx context.Context, _ *mcp.CallToolRequest, in In) (*mcp.CallToolResult, Out, error) {
 			out, err := call(ctx, in)
 			if err != nil {
-				// Return only fixed public messages. Wrapped errors can contain
-				// paths or user input, and must never reach clients or logs.
-				for _, expected := range []error{service.ErrNotFound, service.ErrStale, service.ErrInvalid} {
+				// Service validation reasons are constant public text. Keep them
+				// so clients can correct invalid arguments without exposing input.
+				if errors.Is(err, service.ErrInvalid) {
+					return nil, out, err
+				}
+				// Other wrapped errors may contain paths or user input.
+				for _, expected := range []error{service.ErrNotFound, service.ErrStale} {
 					if errors.Is(err, expected) {
 						return nil, out, expected
 					}

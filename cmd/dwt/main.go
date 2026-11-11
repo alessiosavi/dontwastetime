@@ -39,7 +39,10 @@ commands:
   eval         run --gold file.jsonl [--model name] [--out dir]
   mailboxes    discover [--write-config] | verify
   correct      <message-id> <label>   relabel a message (ids are printed in the digest)
-  mute-thread  <message-id|thread-key> silence a thread resolved off-mail
+  handled      <message-id> [--note text] close the current obligation resolved off-mail
+  snooze       <message-id> <YYYY-MM-DD> hide the current obligation until 08:00 Europe/Rome
+  mute-thread  <message-id|thread-key> stop tracking a thread, including future mail
+  reopen       <message-id|thread-key> clear handled, snooze and mute; recompute
   doctor       health checks; exits non-zero on any red item
   mcp          serve agent tools over stdio --operator <name>
   version      print the version
@@ -67,7 +70,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, usage)
 		return 0
-	case "serve", "sync", "classify", "digest", "explore", "eval", "mailboxes", "correct", "mute-thread", "doctor", "mcp":
+	case "serve", "sync", "classify", "digest", "explore", "eval", "mailboxes", "correct", "handled", "snooze", "mute-thread", "reopen", "doctor", "mcp":
 	default:
 		fmt.Fprintf(stderr, "dwt: unknown command %q\n%s", cmd, usage)
 		return 2
@@ -113,6 +116,7 @@ func dispatch(ctx context.Context, cmd string, args []string, stdout, stderr io.
 	model := fs.String("model", "", "eval run: override the configured model for this run")
 	evalOut := fs.String("out", "", "eval run: report directory (default: <state>/eval/runs)")
 	operator := fs.String("operator", "", "mcp: configured operator name (required)")
+	note := fs.String("note", "", "handled: optional audit note")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return errUsage
@@ -198,12 +202,30 @@ func dispatch(ctx context.Context, cmd string, args []string, stdout, stderr io.
 			return errUsage
 		}
 		return a.correct(ctx, pos[0], pos[1], stdout)
+	case "handled":
+		if len(pos) != 1 {
+			fmt.Fprintln(stderr, "usage: dwt handled <message-id> [--note text]")
+			return errUsage
+		}
+		return a.triageCmd(ctx, cmd, pos[0], *note, stdout)
+	case "snooze":
+		if len(pos) != 2 {
+			fmt.Fprintln(stderr, "usage: dwt snooze <message-id> <YYYY-MM-DD>")
+			return errUsage
+		}
+		return a.triageCmd(ctx, cmd, pos[0], pos[1], stdout)
 	case "mute-thread":
 		if len(pos) != 1 {
 			fmt.Fprintln(stderr, "usage: dwt mute-thread <message-id|thread-key>")
 			return errUsage
 		}
 		return a.muteThread(ctx, pos[0], stdout)
+	case "reopen":
+		if len(pos) != 1 {
+			fmt.Fprintln(stderr, "usage: dwt reopen <message-id|thread-key>")
+			return errUsage
+		}
+		return a.triageCmd(ctx, cmd, pos[0], "", stdout)
 	case "doctor":
 		if !a.doctor(ctx, stdout) {
 			return errors.New("red items above")

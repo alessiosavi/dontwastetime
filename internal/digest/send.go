@@ -89,6 +89,7 @@ var alertTmpl = htmltemplate.Must(htmltemplate.New("alert").Parse(`<!doctype htm
 <li>{{.LastInboundFrom}} — “{{.Subject}}” — casella {{.Mailbox}}{{if .Waiting}} — in attesa da {{.Waiting}}{{end}}</li>{{end}}
 </ul>
 <p>Questo avviso parte una sola volta al giorno per conversazione. Se è già stata gestita a voce:
+<code>dwt handled &lt;id&gt;</code>. Per smettere di seguire il thread, anche per i messaggi futuri:
 <code>dwt mute-thread &lt;id&gt;</code>.</p>
 </body></html>`))
 

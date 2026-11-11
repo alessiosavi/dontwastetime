@@ -183,6 +183,22 @@ func TestServer_OutOfScopeIdIsToolError(t *testing.T) {
 	}
 }
 
+func TestServer_InvalidSnoozeReturnsReason(t *testing.T) {
+	f := setup(t)
+	r := f.call(t, "snooze", map[string]any{"thread": "visible", "inbound_id": f.id, "until": "2026-11-10"})
+	if !r.IsError || len(r.Content) != 1 {
+		t.Fatalf("want invalid snooze tool error, got %+v", r)
+	}
+	msg, ok := r.Content[0].(*mcp.TextContent)
+	want := "parametri non validi: until deve essere nel futuro, entro 90 giorni"
+	if !ok {
+		t.Fatalf("invalid snooze content=%T, want text", r.Content[0])
+	}
+	if msg.Text != want {
+		t.Fatalf("invalid snooze error=%q, want %q", msg.Text, want)
+	}
+}
+
 func TestServer_TriageRecordsOperator(t *testing.T) {
 	f := setup(t)
 	var r service.ThreadState
@@ -295,9 +311,9 @@ func TestServer_InvalidStaleAndInternalErrorsAreSanitized(t *testing.T) {
 		args map[string]any
 		want string
 	}{
-		{"search", map[string]any{"query": " "}, service.ErrInvalid.Error()},
-		{"get_thread", map[string]any{"thread": "visible", "cursor": "/private/secret"}, service.ErrInvalid.Error()},
-		{"digest", map[string]any{"date": "/private/secret"}, service.ErrInvalid.Error()},
+		{"search", map[string]any{"query": " "}, service.ErrInvalid.Error() + ": query vuota"},
+		{"get_thread", map[string]any{"thread": "visible", "cursor": "/private/secret"}, service.ErrInvalid.Error() + ": cursore non valido"},
+		{"digest", map[string]any{"date": "/private/secret"}, service.ErrInvalid.Error() + ": data non valida: usare YYYY-MM-DD fino a oggi"},
 	} {
 		r := f.call(t, tc.name, tc.args)
 		if !r.IsError || len(r.Content) != 1 || r.Content[0].(*mcp.TextContent).Text != tc.want {
