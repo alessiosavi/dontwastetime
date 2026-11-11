@@ -188,3 +188,29 @@ func TestSendMail_DeliveryUnknownOnlyWithoutAnswer(t *testing.T) {
 		t.Fatalf("cancelled before sending: err = %v, want a definite failure", err)
 	}
 }
+
+func TestInboxID_ReturnsIDAndTypedErrors(t *testing.T) {
+	ctx := context.Background()
+	_, c, _ := newFake(t, func(w http.ResponseWriter, r *http.Request) {
+		switch p := r.URL.EscapedPath(); {
+		case strings.HasSuffix(p, "/users/a@example.test/mailFolders/inbox") && r.URL.Query().Get("$select") == "id":
+			_, _ = w.Write([]byte(`{"id":"INBOX-A"}`))
+		case strings.Contains(p, "/users/denied@example.test/"):
+			w.WriteHeader(http.StatusForbidden)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"code":"ErrorInvalidUser","message":"invalid"}}`))
+		}
+	})
+	if id, err := c.InboxID(ctx, "a@example.test"); err != nil || id != "INBOX-A" {
+		t.Fatalf("InboxID = %q, %v; want INBOX-A", id, err)
+	}
+	var mf *ErrMailboxForbidden
+	if _, err := c.InboxID(ctx, "denied@example.test"); !errors.As(err, &mf) {
+		t.Fatalf("403: err = %v, want *ErrMailboxForbidden", err)
+	}
+	var he *HTTPError
+	if _, err := c.InboxID(ctx, "nobody@example.test"); !errors.As(err, &he) || he.Status != http.StatusNotFound {
+		t.Fatalf("404: err = %v, want *HTTPError 404", err)
+	}
+}

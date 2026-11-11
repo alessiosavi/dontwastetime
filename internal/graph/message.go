@@ -2,6 +2,7 @@ package graph
 
 import (
 	"context"
+	"fmt"
 	"net/url"
 	"strings"
 )
@@ -72,6 +73,24 @@ func (c *Client) ListAttachments(ctx context.Context, mailbox, messageID string)
 		}
 	}
 	return out, nil
+}
+
+// InboxID returns the id of the mailbox's Inbox folder. It is a cheap proof
+// that the credential can read the mailbox and a stable identity: an alias
+// and the primary address of one mailbox return the same id. Errors are typed
+// as ListMessages (403 → *ErrMailboxForbidden, 404 → *HTTPError).
+func (c *Client) InboxID(ctx context.Context, mailbox string) (string, error) {
+	u := c.baseURL + "/users/" + url.PathEscape(mailbox) + "/mailFolders/inbox?" + url.Values{"$select": {"id"}}.Encode()
+	var resp struct {
+		ID string `json:"id"`
+	}
+	if err := c.getJSON(ctx, u, mailbox, nil, &resp); err != nil {
+		return "", err
+	}
+	if resp.ID == "" {
+		return "", fmt.Errorf("graph: inbox of %s: empty id", mailbox)
+	}
+	return resp.ID, nil
 }
 
 // ProbeRead reads at most one message id from a folder: the cheapest proof
