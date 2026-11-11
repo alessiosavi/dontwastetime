@@ -25,6 +25,16 @@ func (s *Store) UsageToday(ctx context.Context, day string) (in, out int, err er
 	return in, out, nil
 }
 
+// UsageMonth returns token totals for days in month ("YYYY-MM"), or zero
+// when no calls have been recorded in that month.
+func (s *Store) UsageMonth(ctx context.Context, month string) (in, out int, err error) {
+	err = s.db.QueryRowContext(ctx, `SELECT coalesce(sum(in_tokens),0), coalesce(sum(out_tokens),0) FROM llm_usage WHERE substr(day,1,7) = ?`, month).Scan(&in, &out)
+	if err != nil {
+		return 0, 0, fmt.Errorf("store: usage month: %w", err)
+	}
+	return in, out, nil
+}
+
 // UsageAdjust settles a previously reserved call without incrementing calls.
 // Deltas may be negative when the input estimate exceeded actual usage.
 func (s *Store) UsageAdjust(ctx context.Context, day string, in, out int) error {

@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/mail"
 	"os"
 	"path/filepath"
@@ -37,6 +38,7 @@ var bannedSenders = map[string]bool{"gm@example.com": true}
 var envKeys = []string{
 	"MS_TENANT_ID", "MS_CLIENT_ID", "MS_CLIENT_SECRET",
 	"LLM_URL", "LLM_MODEL", "LLM_API_KEY", "LLM_DAILY_MAX_TOKENS",
+	"LLM_MONTHLY_MAX_COST",
 	"LLM_PRICE_IN_PER_MTOK", "LLM_PRICE_OUT_PER_MTOK", "DWT_STATE_DIR",
 }
 
@@ -73,9 +75,15 @@ type LLMConfig struct {
 	Model               string  `json:"model"`
 	APIKey              string  `json:"-"`
 	DailyMaxTokens      int     `json:"daily_max_tokens"`
+	MonthlyMaxCost      float64 `json:"monthly_max_cost"` // USD; zero disables the money cap
 	PriceInPerMTok      float64 `json:"price_in_per_mtok"`
 	PriceOutPerMTok     float64 `json:"price_out_per_mtok"`
 	ConfidenceThreshold float64 `json:"confidence_threshold"`
+}
+
+// Cost estimates USD from the configured prices per million tokens.
+func (c LLMConfig) Cost(in, out int) float64 {
+	return float64(in)/1e6*c.PriceInPerMTok + float64(out)/1e6*c.PriceOutPerMTok
 }
 
 // GraphConfig holds the app-only Microsoft Graph credential. Env-only.
@@ -128,6 +136,13 @@ func (c *Config) applyEnv() error {
 			return fmt.Errorf("config: LLM_DAILY_MAX_TOKENS: invalid %q", v)
 		}
 		c.LLM.DailyMaxTokens = n
+	}
+	if v := os.Getenv("LLM_MONTHLY_MAX_COST"); v != "" {
+		f, err := strconv.ParseFloat(v, 64)
+		if err != nil || f < 0 || math.IsNaN(f) || math.IsInf(f, 0) {
+			return fmt.Errorf("config: LLM_MONTHLY_MAX_COST: invalid %q", v)
+		}
+		c.LLM.MonthlyMaxCost = f
 	}
 	for key, dst := range map[string]*float64{
 		"LLM_PRICE_IN_PER_MTOK":  &c.LLM.PriceInPerMTok,
@@ -228,6 +243,12 @@ func (c *Config) validate() error {
 	}
 	if c.LLM.DailyMaxTokens < 0 {
 		return errors.New("config: llm.daily_max_tokens must be positive")
+	}
+	if c.LLM.MonthlyMaxCost < 0 {
+		return errors.New("config: llm.monthly_max_cost must be non-negative")
+	}
+	if c.LLM.MonthlyMaxCost > 0 && c.LLM.PriceInPerMTok == 0 && c.LLM.PriceOutPerMTok == 0 {
+		return errors.New("config: llm.monthly_max_cost needs price_in_per_mtok/price_out_per_mtok")
 	}
 	return nil
 }

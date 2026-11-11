@@ -431,6 +431,33 @@ func TestUsageAdd_Today(t *testing.T) {
 	}
 }
 
+func TestUsageMonth_SumsOnlyThatMonth(t *testing.T) {
+	s := openTest(t)
+	ctx := context.Background()
+	for _, row := range []struct {
+		day     string
+		in, out int
+	}{
+		{"2025-11-10", 999, 999},
+		{"2026-10-31", 999, 999},
+		{"2026-11-01", 100, 20},
+		{"2026-11-10", 50, 5},
+		{"2026-11-10", 10, 2},
+		{"2026-11-30", 40, 3},
+		{"2026-12-01", 999, 999},
+	} {
+		if err := s.UsageAdd(ctx, row.day, row.in, row.out); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if in, out, err := s.UsageMonth(ctx, "2026-11"); err != nil || in != 200 || out != 30 {
+		t.Fatalf("month tokens = %d/%d, want 200/30, err=%v", in, out, err)
+	}
+	if in, out, err := s.UsageMonth(ctx, "2027-01"); err != nil || in != 0 || out != 0 {
+		t.Fatalf("empty month tokens = %d/%d, err=%v", in, out, err)
+	}
+}
+
 func TestRecordDigest_DryRunNullSentAt(t *testing.T) {
 	s := openTest(t)
 	ctx := context.Background()

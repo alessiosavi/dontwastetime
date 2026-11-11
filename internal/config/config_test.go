@@ -1,6 +1,7 @@
 package config
 
 import (
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -151,5 +152,98 @@ func TestDay_UsesRome(t *testing.T) {
 	// 23:30 UTC on Nov 10 is already Nov 11 in Rome (UTC+1).
 	if got := Day(time.Date(2026, 11, 10, 23, 30, 0, 0, time.UTC)); got != "2026-11-11" {
 		t.Fatalf("Day = %s", got)
+	}
+}
+
+func TestMonth_UsesRome(t *testing.T) {
+	for _, tc := range []struct{ instant, want string }{
+		{"2026-11-30T22:59:59Z", "2026-11"},
+		{"2026-11-30T23:00:00Z", "2026-12"},
+		{"2026-06-30T22:00:00Z", "2026-07"},
+		{"2026-12-31T23:00:00Z", "2027-01"},
+	} {
+		t.Run(tc.instant, func(t *testing.T) {
+			at, err := time.Parse(time.RFC3339, tc.instant)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := Month(at); got != tc.want {
+				t.Fatalf("Month = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLLMCost(t *testing.T) {
+	cfg := LLMConfig{PriceInPerMTok: 0.30, PriceOutPerMTok: 1.20}
+	for _, tc := range []struct {
+		in, out int
+		want    float64
+	}{
+		{0, 0, 0},
+		{2_000_000, 0, 0.60},
+		{0, 3_000_000, 3.60},
+		{2_000_000, 3_000_000, 4.20},
+		{100, 20, 0.000054},
+	} {
+		if got := cfg.Cost(tc.in, tc.out); math.Abs(got-tc.want) > 1e-12 {
+			t.Errorf("Cost(%d, %d) = %v, want %v", tc.in, tc.out, got, tc.want)
+		}
+	}
+}
+
+func TestConfig_MoneyCapNeedsPrices(t *testing.T) {
+	clearEnv(t)
+	for _, tc := range []struct {
+		name, llm string
+		wantError string
+	}{
+		{"missing prices", `{"monthly_max_cost":10}`, "monthly_max_cost needs price_in_per_mtok/price_out_per_mtok"},
+		{"zero prices", `{"monthly_max_cost":10,"price_in_per_mtok":0,"price_out_per_mtok":0}`, "monthly_max_cost needs price_in_per_mtok/price_out_per_mtok"},
+		{"negative cap", `{"monthly_max_cost":-1}`, "monthly_max_cost must be non-negative"},
+		{"both prices", `{"monthly_max_cost":10,"price_in_per_mtok":0.30,"price_out_per_mtok":1.20}`, ""},
+		{"input only", `{"monthly_max_cost":10,"price_in_per_mtok":0.30}`, ""},
+		{"output only", `{"monthly_max_cost":10,"price_out_per_mtok":1.20}`, ""},
+		{"disabled", `{"monthly_max_cost":0}`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := strings.Replace(minimalJSON, `"digest_sender"`, `"llm":`+tc.llm+`,"digest_sender"`, 1)
+			_, err := LoadConfig(writeFile(t, "config.json", body))
+			if tc.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantError) {
+					t.Fatalf("want money cap error %q, got %v", tc.wantError, err)
+				}
+			} else if err != nil {
+				t.Fatalf("valid money cap config rejected: %v", err)
+			}
+		})
+	}
+}
+
+func TestConfig_MoneyCapEnvOverride(t *testing.T) {
+	clearEnv(t)
+	body := strings.Replace(minimalJSON, `"digest_sender"`, `"llm":{"monthly_max_cost":5,"price_in_per_mtok":0.30,"price_out_per_mtok":1.20},"digest_sender"`, 1)
+	p := writeFile(t, "config.json", body)
+	for _, tc := range []struct {
+		value string
+		want  float64
+		bad   bool
+	}{
+		{"", 5, false}, {"10.25", 10.25, false}, {"0", 0, false},
+		{"-1", 0, true}, {"bad", 0, true}, {"NaN", 0, true}, {"+Inf", 0, true},
+	} {
+		t.Run(tc.value, func(t *testing.T) {
+			t.Setenv("LLM_MONTHLY_MAX_COST", tc.value)
+			cfg, err := LoadConfig(p)
+			if tc.bad {
+				if err == nil || !strings.Contains(err.Error(), "LLM_MONTHLY_MAX_COST") {
+					t.Fatalf("want env error, got %v", err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			} else if cfg.LLM.MonthlyMaxCost != tc.want {
+				t.Fatalf("monthly cap = %v, want %v", cfg.LLM.MonthlyMaxCost, tc.want)
+			}
+		})
 	}
 }

@@ -151,6 +151,80 @@ func TestLLM_BudgetReachedNoCall(t *testing.T) {
 	}
 }
 
+func monthlyBudgetLLM(t *testing.T) (*LLM, *llmtest.Server, *store.Store) {
+	t.Helper()
+	l, f, s := newLLM(t, llmtest.Label("clienti", 0.9))
+	l.cfg.MonthlyMaxCost = 10
+	l.cfg.PriceInPerMTok, l.cfg.PriceOutPerMTok = 0.50, 1.50
+	// Each day costs $5, while today's usage is still zero.
+	for _, day := range []string{"2026-11-01", "2026-11-09"} {
+		if err := s.UsageAdd(context.Background(), day, 4_000_000, 2_000_000); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return l, f, s
+}
+
+func TestBudget_MonthlyCostCapStops(t *testing.T) {
+	for _, spend := range []string{"at cap", "above cap"} {
+		t.Run(spend, func(t *testing.T) {
+			l, f, s := monthlyBudgetLLM(t)
+			ctx := context.Background()
+			if spend == "above cap" {
+				if err := s.UsageAdd(ctx, "2026-11-02", 1_000_000, 0); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, _, err := l.Classify(ctx, items, taxonomy(t), nil); !errors.Is(err, store.ErrBudgetReached) {
+				t.Errorf("want ErrBudgetReached at monthly cap, got %v", err)
+			}
+			if _, _, err := l.Complete(ctx, "riassumi", 100); !errors.Is(err, store.ErrBudgetReached) {
+				t.Errorf("Complete must respect monthly cap, got %v", err)
+			}
+			if n := f.CallCount(); n != 0 {
+				t.Errorf("monthly-stopped calls reached endpoint: %d requests", n)
+			}
+			if in, out, err := s.UsageToday(ctx, "2026-11-10"); err != nil || in != 0 || out != 0 {
+				t.Errorf("refused calls reserved tokens: %d/%d, err=%v", in, out, err)
+			}
+		})
+	}
+}
+
+func TestBudget_MonthlyCapResetsNextMonth(t *testing.T) {
+	l, f, s := monthlyBudgetLLM(t)
+	ctx := context.Background()
+	now := time.Date(2026, 11, 30, 22, 59, 59, 0, time.UTC)
+	l.now = func() time.Time { return now }
+	if _, _, err := l.Complete(ctx, "test", 10); !errors.Is(err, store.ErrBudgetReached) {
+		t.Fatalf("before Rome month boundary: want ErrBudgetReached, got %v", err)
+	}
+	if f.CallCount() != 0 {
+		t.Fatal("stopped call reached endpoint")
+	}
+	now = now.Add(time.Second) // Dec 1 in Rome, still Nov 30 UTC.
+	if _, _, err := l.Classify(ctx, items, taxonomy(t), nil); err != nil {
+		t.Fatalf("next Rome month must allow calls: %v", err)
+	}
+	if f.CallCount() != 1 {
+		t.Fatalf("next month requests = %d, want 1", f.CallCount())
+	}
+	if in, out, err := s.UsageToday(ctx, "2026-12-01"); err != nil || in != 100 || out != 20 {
+		t.Fatalf("next month settlement = %d/%d, err=%v", in, out, err)
+	}
+}
+
+func TestBudget_MonthlyCapDisabled(t *testing.T) {
+	l, f, _ := monthlyBudgetLLM(t)
+	l.cfg.MonthlyMaxCost = 0
+	if _, _, err := l.Classify(context.Background(), items, taxonomy(t), nil); err != nil {
+		t.Fatalf("disabled monthly cap must allow calls: %v", err)
+	}
+	if f.CallCount() != 1 {
+		t.Fatalf("requests = %d, want 1", f.CallCount())
+	}
+}
+
 func TestLLM_PromptCarriesTaxonomyAndExamples(t *testing.T) {
 	l, f, _ := newLLM(t, llmtest.Label("clienti", 0.9))
 	ex := []store.Correction{{NewLabel: "eventi.external", Subject: "Vorremmo ospitare un evento", From: "eventi@terzi.example"}}

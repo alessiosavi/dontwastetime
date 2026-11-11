@@ -23,5 +23,8 @@
 <li>Coda: {{.Health.QueuePending}} in attesa{{if .Health.QueuePending}} (la più vecchia da {{.OldestMin}} min){{end}}, {{.Health.QueueFailed}} in errore definitivo</li>
 <li>Mail in attesa di classificazione: {{.Health.Unclassified}}</li>
 <li>Budget classificatore: {{.Health.TokensUsed}} / {{.Health.TokensLimit}} token ({{.BudgetPct}}%){{if .Health.BudgetReached}} — <b>classificatore in pausa: budget giornaliero raggiunto</b>{{end}}</li>
+{{- if .Health.MonthlyMaxCost}}
+<li>Spesa classificatore nel mese: ${{printf "%.2f" .Health.MonthlyCost}} / ${{printf "%.2f" .Health.MonthlyMaxCost}} (stima)</li>
+{{- end}}
 </ul>
 </body></html>
