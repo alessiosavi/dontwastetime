@@ -21,6 +21,7 @@ import (
 	"github.com/alessiosavi/go-dontwastetime/internal/graph"
 	"github.com/alessiosavi/go-dontwastetime/internal/mailbox"
 	"github.com/alessiosavi/go-dontwastetime/internal/pipeline"
+	"github.com/alessiosavi/go-dontwastetime/internal/service"
 	"github.com/alessiosavi/go-dontwastetime/internal/threads"
 )
 
@@ -40,6 +41,7 @@ commands:
   correct      <message-id> <label>   relabel a message (ids are printed in the digest)
   mute-thread  <message-id|thread-key> silence a thread resolved off-mail
   doctor       health checks; exits non-zero on any red item
+  mcp          serve agent tools over stdio --operator <name>
   version      print the version
 
 common flags: --config (default $DWT_CONFIG or config.json), --state-dir, --env, --taxonomy
@@ -65,7 +67,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "help", "-h", "--help":
 		fmt.Fprint(stdout, usage)
 		return 0
-	case "serve", "sync", "classify", "digest", "explore", "eval", "mailboxes", "correct", "mute-thread", "doctor":
+	case "serve", "sync", "classify", "digest", "explore", "eval", "mailboxes", "correct", "mute-thread", "doctor", "mcp":
 	default:
 		fmt.Fprintf(stderr, "dwt: unknown command %q\n%s", cmd, usage)
 		return 2
@@ -110,12 +112,17 @@ func dispatch(ctx context.Context, cmd string, args []string, stdout, stderr io.
 	gold := fs.String("gold", "", "eval run: gold JSONL file")
 	model := fs.String("model", "", "eval run: override the configured model for this run")
 	evalOut := fs.String("out", "", "eval run: report directory (default: <state>/eval/runs)")
+	operator := fs.String("operator", "", "mcp: configured operator name (required)")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return errUsage
 	}
 	if cmd == "eval" && (len(pos) != 1 || pos[0] != "run" || *gold == "") {
 		fmt.Fprintln(stderr, "usage: dwt eval run --gold file.jsonl [--model name] [--out dir]")
+		return errUsage
+	}
+	if cmd == "mcp" && (*operator == "" || len(pos) != 0) {
+		fmt.Fprintln(stderr, "usage: dwt mcp --operator <name> [common flags]")
 		return errUsage
 	}
 
@@ -144,6 +151,13 @@ func dispatch(ctx context.Context, cmd string, args []string, stdout, stderr io.
 	}
 
 	switch cmd {
+	case "mcp":
+		err := serveMCP(ctx, a, *operator, os.Stdin, stdout)
+		if errors.Is(err, service.ErrUnknownOperator) {
+			fmt.Fprintln(stderr, "unknown operator; usage: dwt mcp --operator <configured-name> [common flags]")
+			return errUsage
+		}
+		return err
 	case "serve":
 		return a.serve(ctx, *dryRun)
 	case "sync":

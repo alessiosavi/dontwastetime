@@ -90,7 +90,9 @@ func openApp(p paths, n need) (*app, error) {
 	if n.graph {
 		a.c = graph.New(cfg.Graph.TenantID, cfg.Graph.ClientID, cfg.Graph.ClientSecret, graph.WithClock(time.Now))
 	}
-	a.llm = classify.NewLLM(cfg.LLM, s, a.now)
+	if n.llm {
+		a.llm = classify.NewLLM(cfg.LLM, s, a.now)
+	}
 	return a, nil
 }
 
