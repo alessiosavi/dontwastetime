@@ -56,11 +56,22 @@ def test_cli_notes_mcp_dispatch(tmp_path, monkeypatch):
     assert calls == [tmp_path, {"transport": "stdio"}]
 
 
-def test_tick_is_explicitly_unavailable(capsys):
+def test_tick_cli_uses_injected_clock_and_exits_0_after_job_failure(profile, monkeypatch, capsys):
+    from datetime import datetime
+    from assistant import tick as runtime
     from assistant.cli import main
 
-    assert main(["tick", "--profile", "dev", "--state-root", "/unused"]) != 0
-    assert "tick non ancora disponibile" in capsys.readouterr().err
+    def fail(p):
+        raise RuntimeError("offline")
+
+    monkeypatch.setattr(runtime, "export_new_sessions", fail)
+    assert main(["tick", "--profile", "dev", "--state-root", str(profile.root.parents[1]),
+                 "--now", "2026-11-14T08:00:00+01:00"]) == 0
+    from assistant.markers import load_markers
+
+    assert load_markers(profile).job_fail_since["export"] == datetime.fromisoformat(
+        "2026-11-14T08:00:00+01:00")
+    assert "offline" in capsys.readouterr().out
 
 
 def test_makefile_assistant_targets(tmp_path):

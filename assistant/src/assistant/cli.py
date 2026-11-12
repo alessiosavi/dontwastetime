@@ -39,7 +39,9 @@ def main(argv=None) -> int:
     launching.add_argument("--tui", action="store_true", help="usa l'interfaccia nel terminale")
     notes = commands.add_parser("notes-mcp", help="avvia il server MCP delle note")
     notes.add_argument("--memory-dir", type=Path, required=True)
-    ticking = commands.add_parser("tick", help="job periodico (non ancora disponibile)")
+    ticking = commands.add_parser("tick", help="esegui i job periodici dovuti")
+    ticking.add_argument("--now", type=datetime.fromisoformat,
+                         help="orario ISO con fuso, solo per test o esecuzioni manuali")
     exporting = commands.add_parser("export", help="esporta le conversazioni nuove o aggiornate")
     snapshotting = commands.add_parser("snapshot", help="salva una copia dello stato dwt")
     recapping = commands.add_parser("recap", help="prepara e invia il riepilogo dell'assistente")
@@ -63,8 +65,9 @@ def main(argv=None) -> int:
 
             create_server(args.memory_dir).run(transport="stdio")
         elif args.command == "tick":
-            print("tick non ancora disponibile", file=sys.stderr)
-            return 1
+            from assistant.tick import tick
+
+            tick(load_profile(args.profile, args.state_root), args.now or datetime.now(timezone.utc))
         elif args.command == "export":
             from assistant.sessions import export_new_sessions
 
