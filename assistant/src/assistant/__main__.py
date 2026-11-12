@@ -1,11 +1,9 @@
-"""Temporary notes-only dispatch; Task 8 will supply the full CLI."""
+"""Support python -m assistant with the same CLI as the console script."""
 
 import sys
 
-from assistant import notes_mcp
+from assistant.cli import main
 
 
 if __name__ == "__main__":
-    if sys.argv[1:2] != ["notes-mcp"]:
-        sys.exit("Uso: python -m assistant notes-mcp --memory-dir <directory>")
-    notes_mcp.main(sys.argv[2:])
+    sys.exit(main())
