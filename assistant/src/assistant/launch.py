@@ -2,6 +2,7 @@
 
 import base64
 from datetime import datetime, timezone
+import fcntl
 import importlib
 import json
 import os
@@ -18,7 +19,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 
 from assistant.install import _atomic_write
 from assistant.opencode_env import opencode_env, warn_opencode_version
-from assistant.profile import _read_object, load_profile
+from assistant.profile import Profile, _read_object, load_profile
 from assistant.render import render_workspace
 from assistant.snapshot import ui_active
 
@@ -119,22 +120,48 @@ def launch(
 ) -> int:
     """Reopen an active UI, or render and supervise a new private process."""
     p = load_profile(profile, state_root)
+    # Keep this inode stable, and hold the lock through child shutdown/cleanup.
+    with (p.root / "ui.lock").open("a", encoding="utf-8") as lock:
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return _reopen_ui(p, wait=5)
+        return _launch_locked(p, tui=tui, timeout=timeout)
+
+
+def _reopen_ui(p: Profile, *, wait: float = 0) -> int:
+    deadline = time.monotonic() + wait
+    while True:
+        try:
+            info = _read_object(p.root / "ui.json")
+            port = info.get("port")
+            if (type(port) is int and 1 <= port <= 65535 and ui_active(p)
+                    and info.get("pid") == int((p.root / "ui.pid").read_text(encoding="utf-8"))):
+                break
+        except (FileNotFoundError, ValueError):
+            pass  # The other launcher may still be publishing its metadata.
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            if wait:
+                print("L'assistente si sta già aprendo.", flush=True)
+                return 0
+            raise RuntimeError("L'assistente è già attivo; la porta del browser non è disponibile.")
+        time.sleep(min(0.1, remaining))
+    result = subprocess.run(
+        ["open", f"http://127.0.0.1:{port}/"], stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+    if result.returncode:
+        raise RuntimeError("Impossibile aprire il browser.")
+    print("L'assistente è già aperto nel browser.", flush=True)
+    return 0
+
+
+def _launch_locked(p: Profile, *, tui: bool, timeout: float) -> int:
     warn_opencode_version(p.settings.opencode_bin)
     ui_file = p.root / "ui.json"
     if ui_active(p):
-        info = _read_object(ui_file)
-        port = info.get("port")
-        if (info.get("pid") != int((p.root / "ui.pid").read_text(encoding="utf-8"))
-                or type(port) is not int or not 1 <= port <= 65535):
-            raise RuntimeError("L'assistente è già attivo; la porta del browser non è disponibile.")
-        result = subprocess.run(
-            ["open", f"http://127.0.0.1:{port}/"], stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
-        if result.returncode:
-            raise RuntimeError("Impossibile aprire il browser.")
-        print("L'assistente è già aperto nel browser.", flush=True)
-        return 0
+        return _reopen_ui(p)
     render_workspace(p, p.root / "harness-live")
     _snapshot_if_available(p)
     env = opencode_env(p, "ui", workspace=p.workspace)

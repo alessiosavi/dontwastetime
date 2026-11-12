@@ -22,6 +22,26 @@ START = NOW - timedelta(days=1)
 FIXTURE = Path(__file__).parent / "fixtures/run_events.jsonl"
 
 
+def thread_message(message_id, *, at="2026-11-12T08:00:00Z", direction="in", sender="Colleague", subject="Fattura"):
+    return {
+        "id": message_id, "thread": "c:invoice", "mailbox": "operator@example.com",
+        "bucket": "clienti", "bucket_title": "Clienti e preventivi", "received_at": at,
+        "age": "1h", "direction": direction, "has_attachments": False,
+        "body_purged": False, "trimmed": False,
+        "untrusted": {"from": "colleague@example.com" if sender else "", "from_name": sender,
+                      "subject": subject, "preview": "Anteprima", "body": "Testo sintetico"},
+    }
+
+
+def thread_result(thread, messages):
+    return {
+        "meta": {"as_of": NOW.isoformat(), "freshness": [], "unclassified": 0,
+                 "next_cursor": "do-not-follow-this-page"},
+        "thread": thread, "messages": messages, "reply_state": "open",
+        "due_at": None, "snoozed_until": None,
+    }
+
+
 class MailState:
     def __init__(self, *, count=7, synced=NOW):
         self.items = [
@@ -47,6 +67,9 @@ class MailState:
         if tool == "get_message":
             return {"id": args["id"], "untrusted": {"from_name": "Colleague", "from": "colleague@example.com",
                     "subject": "Fattura", "preview": "", "body": ""}}
+        if tool == "get_thread":
+            message_id = 16 if args["thread"] == "#16" else 17
+            return thread_result(args["thread"], [thread_message(message_id)])
         if tool == "context":
             return {"buckets": [{"key": "clienti", "title": "Clienti e preventivi"}]}
         assert tool == "needs_reply"
@@ -146,10 +169,46 @@ def test_fatto_lists_only_successful_triage_calls(profile):
     assert fatto.splitlines() == [
         "- chiusa: «Fattura» di Colleague (#12)", "- rimandata al 13 novembre: «Fattura» di Colleague (#12)",
         "- riclassificata come Clienti e preventivi: «Fattura» di Colleague (#15)",
-        "- silenziata: c:muted", "- riaperta: «Fattura» di Colleague (#16)",
+        "- silenziata: «Fattura» di Colleague (#17)", "- riaperta: «Fattura» di Colleague (#16)",
     ]
-    assert [args for tool, args in mail.calls if tool == "get_message"] == [{"id": 12}, {"id": 15}, {"id": 16}]
+    assert [args for tool, args in mail.calls if tool == "get_message"] == [{"id": 12}, {"id": 15}]
+    assert [args for tool, args in mail.calls if tool == "get_thread"] == [{"thread": "c:muted"}, {"thread": "#16"}]
     assert sum(tool == "context" for tool, _ in mail.calls) == 1
+
+
+@pytest.mark.parametrize("messages, unavailable, expected", [
+    ([thread_message(80, at="2026-11-12T06:00:00Z", subject="Vecchia fattura"),
+      thread_message(9, at="2026-11-12T07:00:00Z", sender="Anna\n Sample", subject="Nuova\n fattura"),
+      thread_message(90, at="2026-11-12T08:00:00Z", direction="out", sender="Operator", subject="Risposta")],
+     False, "«Nuova fattura» di Anna Sample (#9)"),
+    ([thread_message(10, sender="", subject=""),
+      thread_message(11, at="2026-11-12T09:00:00Z", direction="out")], False, "conversazione #11"),
+    ([thread_message(12, direction="out")], False, "conversazione #12"),
+    ([], False, "c:invoice"),
+    ([], True, "c:invoice"),
+])
+def test_fatto_thread_actions_resolve_newest_inbound_and_cache(profile, messages, unavailable, expected):
+    from assistant.dwt_client import DwtError
+    from assistant.recap import build_recap
+
+    class ThreadMail(MailState):
+        def call(self, tool, args=None):
+            if tool == "get_thread":
+                self.calls.append((tool, args))
+                if unavailable:
+                    raise DwtError("not found")
+                return thread_result(args["thread"], messages)
+            return super().call(tool, args)
+
+    export_turn(profile, calls=[
+        ToolCall("dwt", "mute_thread", {"thread": "c:invoice"}, True, ""),
+        ToolCall("dwt", "reopen", {"thread": "c:invoice"}, True, ""),
+    ])
+    mail = ThreadMail()
+    recap = build_recap(profile, START, NOW, client=mail, summarize=lambda turns: "")
+    assert f"- silenziata: {expected}\n- riaperta: {expected}" in recap.text
+    assert [args for tool, args in mail.calls if tool == "get_thread"] == [{"thread": "c:invoice"}]
+    assert not any(tool == "get_message" for tool, _ in mail.calls)
 
 
 def test_fatto_lookup_failures_keep_ids_and_cache_errors(profile):

@@ -61,7 +61,29 @@ def _opening(text: str) -> str:
     return " ".join(re.split(r"(?<=[.!?])\s+", _line(text))[:3])
 
 
-def _action(call: ToolCall, client: DwtClient, messages: dict[int, str], buckets: dict[str, str]) -> str:
+def _thread_label(thread: str, client: DwtClient, threads: dict[str, str]) -> str:
+    if thread not in threads:
+        threads[thread] = _line(thread) or "riferimento non disponibile"
+        try:
+            items = client.call("get_thread", {"thread": thread}).get("messages") or []
+            order = lambda item: (datetime.fromisoformat(item["received_at"]), item["id"])
+            newest = max(items, key=order, default=None)
+            if newest is not None:
+                threads[thread] = f"conversazione #{newest['id']}"
+            inbound = max((item for item in items if item["direction"] == "in"), key=order, default=None)
+            if inbound is not None:
+                mail = inbound["untrusted"]
+                sender = _line(mail.get("from_name") or mail.get("from"))
+                subject = _line(mail.get("subject"))
+                if sender and subject:
+                    threads[thread] = f"«{subject}» di {sender} (#{inbound['id']})"
+        except Exception:
+            pass  # Keep the best available reference if this thread has disappeared.
+    return threads[thread]
+
+
+def _action(call: ToolCall, client: DwtClient, messages: dict[int, str],
+            buckets: dict[str, str], threads: dict[str, str]) -> str:
     if call.tool in ("mark_handled", "snooze"):
         ref = call.args.get("inbound_id")
     elif call.tool == "relabel":
@@ -72,7 +94,9 @@ def _action(call: ToolCall, client: DwtClient, messages: dict[int, str], buckets
     if ref is None:
         ref = call.args.get("thread")
     obj = _line(ref) or "riferimento non disponibile"
-    if (isinstance(ref, int) and not isinstance(ref, bool) and ref > 0
+    if call.tool in ("mute_thread", "reopen") and isinstance(ref, str):
+        obj = _thread_label(ref, client, threads)
+    elif (isinstance(ref, int) and not isinstance(ref, bool) and ref > 0
             or isinstance(ref, str) and re.fullmatch(r"#?[0-9]+", ref)):
         message_id = int(str(ref).removeprefix("#"))
         if message_id not in messages:
@@ -215,7 +239,8 @@ def build_recap(
             except Exception:
                 pass
         messages = {}
-        actions = [_action(call, client, messages, buckets) for call in calls]
+        threads = {}
+        actions = [_action(call, client, messages, buckets, threads) for call in calls]
         sections.extend([
             _section("Fatto", actions[:40] + ([f"e altre {len(actions) - 40} azioni"] if len(actions) > 40 else [])),
             _section("Ancora aperto", [_reply(item) for item in replies[:5]]

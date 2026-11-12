@@ -349,7 +349,10 @@ def test_install_without_state_root_locates_profiles_in_live_state(installation)
     assert p.root == installation["live"] / "assistant/operator"
 
 
-@pytest.mark.parametrize("version, warns", [("2.2.7", False), ("2.2.5", True), ("2.2.70", True)])
+@pytest.mark.parametrize("version, warns", [
+    ("2.2.7", False), ("2.2.5", True), ("2.2.70", True),
+    ("opencode v2.2.7", False), ("opencode v2.3.0", True),
+])
 def test_install_version_warning_is_nonfatal_on_stderr(installation, version, warns, capsys):
     tool = Path(os.environ["PATH"]) / "opencode"
     tool.write_text(f"#!{sys.executable}\nprint({version!r})\n")
@@ -365,6 +368,51 @@ def test_operator_install_accepts_explicit_digest_recipient_case_insensitively(i
     (installation["repo"] / "config.json").write_text(json.dumps(config))
     p = do_install(installation, "operator", recap_recipient="person.two@example.com", no_launchd=True)
     assert p.settings.recap_recipient == "person.two@example.com"
+
+
+@pytest.mark.parametrize("recipients, explicit, expected", [
+    (["operator@example.com", "other@example.com"], None, "operator@example.com"),
+    (["person.two@example.com", "other@example.com"], None, "operator@example.com"),
+    (["new@example.com"], None, "new@example.com"),
+    (["new@example.com", "other@example.com"], None, None),
+    (["operator@example.com", "other@example.com"], "other@example.com", "other@example.com"),
+])
+def test_operator_reinstall_preserves_only_allowlisted_recap_recipient(installation, recipients, explicit, expected):
+    p = do_install(installation, "operator", no_launchd=True)
+    config_file = installation["repo"] / "config.json"
+    config_file.write_text(json.dumps({**installation["config"], "digest_recipients": recipients}))
+    previous_calls = calls(installation)
+    previous_settings = (p.root / "settings.json").read_bytes()
+    if expected is None:
+        with pytest.raises(ValueError, match="--recap-recipient"):
+            do_install(installation, "operator", recap_recipient=explicit, no_launchd=True)
+        assert calls(installation) == previous_calls
+        assert (p.root / "settings.json").read_bytes() == previous_settings
+    else:
+        refreshed = do_install(installation, "operator", recap_recipient=explicit, no_launchd=True)
+        assert refreshed.settings.recap_recipient == expected
+        assert load_profile("operator", installation["state_root"]).settings.recap_recipient == expected
+
+
+@pytest.mark.parametrize("profile_name", ["dev", "operator"])
+def test_reinstall_refuses_active_ui_before_mutating_profile(installation, profile_name, capsys):
+    from assistant.cli import main
+
+    p = do_install(installation, profile_name, no_launchd=True)
+    (p.root / "ui.pid").write_text(str(os.getpid()))
+    before = {file.relative_to(p.root): (file.read_bytes(), file.stat().st_ino)
+              for file in p.root.rglob("*") if file.is_file()}
+    previous_calls = calls(installation)
+    args = ["install", "--profile", profile_name, "--repo", str(installation["repo"]),
+            "--state-root", str(installation["state_root"]), "--no-launchd"]
+    if profile_name == "dev":
+        args += ["--dev-recipient", "dev@example.com"]
+    result = main(args)
+    assert result != 0
+    assert "Chiudi l'assistente prima di aggiornarlo." in capsys.readouterr().err
+    assert calls(installation) == previous_calls
+    assert {file.relative_to(p.root): (file.read_bytes(), file.stat().st_ino)
+            for file in p.root.rglob("*") if file.is_file()} == before
 
 
 @pytest.mark.parametrize("recipients, chosen", [

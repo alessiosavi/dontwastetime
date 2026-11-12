@@ -3,6 +3,7 @@
 from collections.abc import Mapping, Sequence
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 from typing import Literal
@@ -21,7 +22,8 @@ def warn_opencode_version(binary: str) -> None:
             [binary, "--version"], timeout=10, stdin=subprocess.DEVNULL,
             capture_output=True, text=True,
         )
-        supported = result.returncode == 0 and result.stdout.strip() == "2.2.7"
+        version = re.search(r"\d+\.\d+\.\d+(?:-[\w.-]+)?(?:\+[\w.-]+)?", result.stdout)
+        supported = result.returncode == 0 and version is not None and version.group() == "2.2.7"
     except (OSError, subprocess.SubprocessError):
         supported = False
     if not supported:
