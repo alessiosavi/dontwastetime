@@ -9,9 +9,9 @@ import (
 	"net/url"
 )
 
-// ErrDeliveryUnknown means the sendMail request may have reached Graph but no
-// answer came back (timeout, reset): the mail may have been delivered, so a
-// retry could send it twice.
+// ErrDeliveryUnknown means the sendMail request may have reached Graph but
+// delivery cannot be confirmed (no answer or an unexpected success status):
+// the mail may have been delivered, so a retry could send it twice.
 var ErrDeliveryUnknown = errors.New("graph: sendMail got no answer; the mail may have been delivered")
 
 // SendMail sends one HTML mail from sender's mailbox. It is the only write dwt
@@ -59,7 +59,7 @@ func (c *Client) SendMail(ctx context.Context, sender string, to []string, subje
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusAccepted {
-		return fmt.Errorf("graph: sendMail: unexpected HTTP %d (want 202)", resp.StatusCode)
+		return fmt.Errorf("graph: sendMail: unexpected HTTP %d (want 202): %w", resp.StatusCode, ErrDeliveryUnknown)
 	}
 	return nil
 }

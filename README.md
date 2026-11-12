@@ -7,7 +7,7 @@ digest every working day at 08:00 Europe/Rome plus an immediate alert for P0
 client threads.
 
 **Read-only on the mailboxes.** v1 never moves, labels, marks or deletes mail.
-The only mail it sends is the digest and the P0 alerts, from `digest_sender`
+It sends digests, P0 alerts and explicit `send-note` recaps, from `digest_sender`
 (default `admin@example.com`, `saveToSentItems:false`).
 
 ## How it works
@@ -94,6 +94,7 @@ sign-off. Re-run `explore` monthly for the first three months, or whenever
 | `dwt classify [--limit n]` | Drain pending classify and thread jobs once (no alerts). |
 | `dwt digest [--date YYYY-MM-DD\|today] [--dry-run]` | Build the digest for that day's 08:00 and send it, at most once per day. |
 | `dwt digest --since YYYY-MM-DD [--dry-run]` | Include mail received since midnight Europe/Rome on that date, without the seven-day late-mail cap (e.g. `--since 2026-11-01` for the first digest of November); `since` must precede the digest instant. |
+| `dwt send-note --to <addr> --subject <s> --file <path> [--dry-run]` | Email a UTF-8 text note to one `digest_recipients` address, from `digest_sender`. `--dry-run` audits the note without sending or requiring credentials. |
 | `dwt explore [--days n] [--mailboxes a,b] [--max-messages n]` | Phase-0 clustering reports. |
 | `dwt mailboxes verify` / `discover [--write-config]` | Probe access; list the tenant's readable mailboxes (member accounts whose inbox the app can read; an alias of a configured box is not listed twice) and merge new ones into `config.json` (`digest:false`, backup in `.bak`). |
 | `dwt correct <id> <label>` | Relabel a message, save a few-shot example and recompute its thread immediately. Ids are the `#N` at the end of digest lines. |
@@ -106,6 +107,15 @@ sign-off. Re-run `explore` monthly for the first three months, or whenever
 
 Every command accepts `--config`, `--state-dir`, `--env` and `--taxonomy`
 (`.env` and `taxonomy.json` default to the config file's directory).
+
+`send-note` accepts at most 200 characters in the subject (no CR/LF) and 64 KiB
+of non-empty UTF-8 text. It escapes the text as HTML and preserves line breaks.
+Exit codes: **0** sent or dry run (also if auditing an accepted send fails,
+with a warning on stderr); **3** delivery unknown, never retry; **4** definitely
+not sent, safe to retry; **2** usage, including missing required flags.
+Unreadable or oversized files and setup failures return 4. Other exits, signals
+or timeouts must be treated as unknown by the caller. The caller must prevent
+duplicate invocations; `send-note` does not deduplicate notes across runs.
 
 Triage commands use the same service as MCP and change only local dwt records.
 They accept numeric ids or quoted `'#N'` references; mute and reopen also accept
@@ -150,6 +160,7 @@ agent provider's session.
 - **launchd**: `make install` runs `doctor`, renders
   `deploy/com.local.dontwastetime.plist` into `~/Library/LaunchAgents`, and
   bootstraps it. Run it from the checkout that holds `config.json` and `.env`.
+  `make install DRY_RUN=1` installs it with `serve --dry-run` to send nothing.
   `make uninstall-agent` removes it.
 - **Logs**: `<state>/logs/dwt.err.log` (JSON). Logs carry ids and counts, never
   bodies, tokens or secrets.

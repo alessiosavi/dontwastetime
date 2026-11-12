@@ -36,6 +36,7 @@ commands:
   sync         one sync pass [--mailbox addr] [--initial-days n]
   classify     drain pending classify/thread jobs once [--limit n]
   digest       build and send the digest [--date YYYY-MM-DD|today] [--dry-run] [--since YYYY-MM-DD]
+  send-note    mail a text note --to <addr> --subject <s> --file <path> [--dry-run]
   explore      phase-0 clustering report [--days n] [--mailboxes a,b] [--max-messages n]
   eval         run --gold file.jsonl [--model name] [--out dir]
   mailboxes    discover [--write-config] | verify
@@ -66,7 +67,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	cmd, rest := args[0], args[1:]
 	switch cmd {
-	case "serve", "sync", "classify", "digest", "explore", "eval", "mailboxes", "correct", "handled", "snooze", "mute-thread", "reopen", "doctor", "mcp", "version", "help", "-h", "--help":
+	case "serve", "sync", "classify", "digest", "send-note", "explore", "eval", "mailboxes", "correct", "handled", "snooze", "mute-thread", "reopen", "doctor", "mcp", "version", "help", "-h", "--help":
 	default:
 		fmt.Fprintf(stderr, "dwt: unknown command %q\n%s", cmd, usage)
 		return 2
@@ -79,6 +80,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return 2
 		}
 		fmt.Fprintf(stderr, "dwt %s: %v\n", cmd, err)
+		if cmd == "send-note" {
+			if errors.Is(err, graph.ErrDeliveryUnknown) {
+				return 3
+			}
+			if errors.Is(err, digest.ErrNoteNotSent) {
+				return 4
+			}
+		}
 		return 1
 	}
 	return 0
@@ -98,7 +107,7 @@ func dispatch(ctx context.Context, cmd string, args []string, stdout, stderr io.
 	fs.StringVar(&p.stateDir, "state-dir", "", "state directory (default from config / DWT_STATE_DIR)")
 	fs.StringVar(&p.env, "env", "", "env file (default: .env next to the config)")
 	fs.StringVar(&p.taxonomy, "taxonomy", "", "taxonomy file (default: taxonomy.json next to the config)")
-	dryRun := fs.Bool("dry-run", false, "serve/digest: save digests and alerts to the state dir, send nothing")
+	dryRun := fs.Bool("dry-run", false, "serve/digest/send-note: send nothing; serve/digest save digests and alerts to the state dir")
 	initialDays := fs.Int("initial-days", 0, "serve/sync: days to read on a mailbox's first sync (default from config, 90)")
 	mailboxFlag := fs.String("mailbox", "", "sync: only this mailbox")
 	limit := fs.Int("limit", 0, "classify: max classify jobs to run (0 = all)")
@@ -115,14 +124,27 @@ func dispatch(ctx context.Context, cmd string, args []string, stdout, stderr io.
 	operator := fs.String("operator", "", "mcp: configured operator name (required)")
 	nowFlag := fs.String("now", "", "mcp: fixed clock (RFC3339) for replays on a database copy")
 	note := fs.String("note", "", "handled: optional audit note")
+	var noteTo, noteSubject, noteFile string
+	if cmd == "send-note" {
+		fs.StringVar(&noteTo, "to", "", "send-note: one configured digest recipient")
+		fs.StringVar(&noteSubject, "subject", "", "send-note: subject (at most 200 characters, no CR/LF)")
+		fs.StringVar(&noteFile, "file", "", "send-note: UTF-8 text file (at most 64 KiB)")
+	}
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return errUsage
 	}
-	nowSet := false
+	var nowSet, noteToSet, noteSubjectSet, noteFileSet bool
 	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "now" {
+		switch f.Name {
+		case "now":
 			nowSet = true
+		case "to":
+			noteToSet = true
+		case "subject":
+			noteSubjectSet = true
+		case "file":
+			noteFileSet = true
 		}
 	})
 	var fixed time.Time
@@ -153,6 +175,18 @@ func dispatch(ctx context.Context, cmd string, args []string, stdout, stderr io.
 		fmt.Fprintln(stderr, "usage: dwt mcp --operator <name> [--now <RFC3339>] [common flags]")
 		return errUsage
 	}
+	var noteInput digest.Note
+	if cmd == "send-note" {
+		if !noteToSet || !noteSubjectSet || !noteFileSet || len(pos) != 0 {
+			fmt.Fprintln(stderr, "usage: dwt send-note --to <addr> --subject <s> --file <path> [--dry-run] [common flags]")
+			return errUsage
+		}
+		text, err := readNoteFile(noteFile)
+		if err != nil {
+			return fmt.Errorf("%w: %w", digest.ErrNoteNotSent, err)
+		}
+		noteInput = digest.Note{To: noteTo, Subject: noteSubject, Text: text}
+	}
 	var digestAt time.Time
 	var digestOpts digest.Options
 	if cmd == "digest" {
@@ -176,7 +210,7 @@ func dispatch(ctx context.Context, cmd string, args []string, stdout, stderr io.
 		n = need{graph: true, llm: true}
 	case "sync", "mailboxes":
 		n = need{graph: true}
-	case "digest":
+	case "digest", "send-note":
 		n = need{graph: !*dryRun}
 	}
 	if cmd == "eval" {
@@ -184,6 +218,9 @@ func dispatch(ctx context.Context, cmd string, args []string, stdout, stderr io.
 	}
 	a, err := openApp(p, n)
 	if err != nil {
+		if cmd == "send-note" {
+			return fmt.Errorf("%w: %w", digest.ErrNoteNotSent, err)
+		}
 		return err
 	}
 	defer a.close()
@@ -219,6 +256,8 @@ func dispatch(ctx context.Context, cmd string, args []string, stdout, stderr io.
 		}
 		fmt.Fprintf(stdout, "digest %s saved under %s (dry-run=%v)\n", config.Day(digestAt), filepath.Join(a.cfg.StateDir, "digests"), *dryRun)
 		return nil
+	case "send-note":
+		return digest.SendNote(ctx, a.s, a.c, a.cfg, noteInput, *dryRun, a.now())
 	case "explore":
 		o := explore.Options{Days: *days, MaxMessages: *maxMessages, Mailboxes: splitList(*mailboxes)}
 		if len(o.Mailboxes) == 0 {
@@ -271,6 +310,24 @@ func dispatch(ctx context.Context, cmd string, args []string, stdout, stderr io.
 		}
 	}
 	return nil
+}
+
+// readNoteFile bounds memory use even for a file larger than the note limit.
+func readNoteFile(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	const maxBytes = 64 * 1024
+	raw, err := io.ReadAll(io.LimitReader(f, maxBytes+1))
+	if err != nil {
+		return "", err
+	}
+	if len(raw) > maxBytes {
+		return "", errors.New("note: file exceeds 64 KiB")
+	}
+	return string(raw), nil
 }
 
 func (a *app) syncCmd(ctx context.Context, only string, out io.Writer) error {

@@ -4,13 +4,17 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/alessiosavi/go-dontwastetime/internal/graph/graphtest"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -218,6 +222,172 @@ func TestNowFlagRejectsBadValue(t *testing.T) {
 			code := run([]string{"mcp", "--config", path, "--operator", "founder", "--now", value}, &out, &errb)
 			if code != 2 || out.Len() != 0 || !strings.Contains(errb.String(), "RFC3339") {
 				t.Fatalf("exit=%d stdout=%q stderr=%q, want exit 2 and RFC3339 explanation", code, out.String(), errb.String())
+			}
+		})
+	}
+}
+
+// noteCommandFixture routes every request to a local fake; unexpected hosts
+// fail closed so these CLI tests cannot contact real Graph or send real mail.
+func noteCommandFixture(t *testing.T, api http.HandlerFunc) (string, string, *graphtest.Server) {
+	t.Helper()
+	path := mcpConfig(t)
+	for key, value := range map[string]string{"MS_TENANT_ID": "tenant", "MS_CLIENT_ID": "client", "MS_CLIENT_SECRET": "secret"} {
+		t.Setenv(key, value)
+	}
+	srv, _ := graphtest.New(t, api)
+	fakeURL, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := http.DefaultTransport
+	http.DefaultTransport = evalTransport(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host != "graph.microsoft.com" && r.URL.Host != "login.microsoftonline.com" {
+			return nil, fmt.Errorf("unexpected test host %q", r.URL.Host)
+		}
+		r = r.Clone(r.Context())
+		r.URL.Scheme, r.URL.Host, r.Host = fakeURL.Scheme, fakeURL.Host, ""
+		return previous.RoundTrip(r)
+	})
+	t.Cleanup(func() { http.DefaultTransport = previous })
+	file := filepath.Join(filepath.Dir(path), "note.txt")
+	if err := os.WriteFile(file, []byte("Fatto\nRiepilogo di oggi."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path, file, srv
+}
+
+func TestRunSendNoteExitCodeUnknownIs3(t *testing.T) {
+	path, file, srv := noteCommandFixture(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		conn, _, err := w.(http.Hijacker).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		_ = conn.Close() // received the note; lose the reply to the caller
+	})
+	var out, errb bytes.Buffer
+	code := run([]string{"send-note", "--config", path, "--to", "operator@example.test", "--subject", "Riepilogo", "--file", file}, &out, &errb)
+	if code != 3 || !strings.Contains(errb.String(), "may have been delivered") {
+		t.Fatalf("exit=%d stderr=%q, want unknown delivery exit 3", code, errb.String())
+	}
+	if got := srv.APICalls.Load(); got != 1 {
+		t.Fatalf("send attempts=%d, want 1", got)
+	}
+}
+
+func TestRunSendNoteAmbiguousResponseIs3(t *testing.T) {
+	for _, status := range []int{http.StatusBadGateway, http.StatusGatewayTimeout, http.StatusOK} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			path, file, srv := noteCommandFixture(t, func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(status)
+			})
+			var out, errb bytes.Buffer
+			code := run([]string{"send-note", "--config", path, "--to", "operator@example.test", "--subject", "Riepilogo", "--file", file}, &out, &errb)
+			if code != 3 {
+				t.Fatalf("HTTP %d: exit=%d stderr=%q, want unknown delivery exit 3", status, code, errb.String())
+			}
+			if got := srv.APICalls.Load(); got != 1 {
+				t.Fatalf("send attempts=%d, want 1", got)
+			}
+		})
+	}
+}
+
+func TestRunSendNoteRejectedIs4(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		to      string
+		subject string
+		want    int32
+	}{
+		{"Graph 400", "operator@example.test", "Riepilogo", 1},
+		{"outside digest recipients", "other@example.test", "Riepilogo", 0},
+		{"empty recipient", "", "Riepilogo", 0},
+		{"empty subject", "operator@example.test", "", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path, file, srv := noteCommandFixture(t, func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusBadRequest)
+			})
+			var out, errb bytes.Buffer
+			code := run([]string{"send-note", "--config", path, "--to", tc.to, "--subject", tc.subject, "--file", file}, &out, &errb)
+			if code != 4 {
+				t.Fatalf("exit=%d stderr=%q, want definitely not sent exit 4", code, errb.String())
+			}
+			if got := srv.APICalls.Load(); got != tc.want {
+				t.Fatalf("Graph requests=%d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestRunSendNoteAcceptedIs0(t *testing.T) {
+	path, file, srv := noteCommandFixture(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+	})
+	var out, errb bytes.Buffer
+	code := run([]string{"send-note", "--config", path, "--to", "operator@example.test", "--subject", "Riepilogo", "--file", file}, &out, &errb)
+	if code != 0 || srv.APICalls.Load() != 1 {
+		t.Fatalf("exit=%d sends=%d stderr=%q", code, srv.APICalls.Load(), errb.String())
+	}
+}
+
+func TestRunSendNoteDryRunNeedsNoCredentials(t *testing.T) {
+	path := mcpConfig(t)
+	file := filepath.Join(filepath.Dir(path), "note.txt")
+	if err := os.WriteFile(file, []byte("Fatto\nRiepilogo di oggi."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	previous := http.DefaultTransport
+	http.DefaultTransport = evalTransport(func(r *http.Request) (*http.Response, error) {
+		t.Errorf("dry run reached network: %s", r.URL.Host)
+		return nil, fmt.Errorf("network forbidden in dry run")
+	})
+	t.Cleanup(func() { http.DefaultTransport = previous })
+	var out, errb bytes.Buffer
+	code := run([]string{"send-note", "--config", path, "--to", "operator@example.test", "--subject", "Riepilogo", "--file", file, "--dry-run"}, &out, &errb)
+	if code != 0 {
+		t.Fatalf("exit=%d stderr=%q, want credential-free dry run", code, errb.String())
+	}
+}
+
+func TestRunSendNoteUsageAndFileErrors(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "note.txt")
+	if err := os.WriteFile(file, bytes.Repeat([]byte{'x'}, 64*1024+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		args []string
+		want int
+	}{
+		{"all missing", nil, 2},
+		{"missing to", []string{"--subject", "Riepilogo", "--file", file}, 2},
+		{"missing subject", []string{"--to", "operator@example.test", "--file", file}, 2},
+		{"missing file", []string{"--to", "operator@example.test", "--subject", "Riepilogo"}, 2},
+		{"positional argument", []string{"--to", "operator@example.test", "--subject", "Riepilogo", "--file", file, "extra"}, 2},
+		{"unreadable file", []string{"--to", "operator@example.test", "--subject", "Riepilogo", "--file", filepath.Join(dir, "absent")}, 4},
+		{"oversized file", []string{"--to", "operator@example.test", "--subject", "Riepilogo", "--file", file}, 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out, errb bytes.Buffer
+			args := append([]string{"send-note", "--config", filepath.Join(dir, "no-config.json")}, tc.args...)
+			if code := run(args, &out, &errb); code != tc.want {
+				t.Fatalf("exit=%d stderr=%q, want %d", code, errb.String(), tc.want)
+			}
+		})
+	}
+}
+
+func TestRunSendNoteFlagsStayCommandSpecific(t *testing.T) {
+	for _, name := range []string{"to", "subject", "file"} {
+		t.Run(name, func(t *testing.T) {
+			var out, errb bytes.Buffer
+			if code := run([]string{"version", "--" + name, "value"}, &out, &errb); code != 2 {
+				t.Fatalf("exit=%d stderr=%q, want existing unknown-flag exit 2", code, errb.String())
 			}
 		})
 	}
