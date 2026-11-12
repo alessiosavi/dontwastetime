@@ -156,6 +156,35 @@ def test_standalone_flag_before_positional_separator(profile, fake_opencode):
     assert argv[argv.index("--") + 1:] == ["--standalone"]
 
 
+@pytest.mark.parametrize("model", [None, "fake/override"])
+def test_run_prompt_puts_separator_before_message(profile, fake_opencode, tmp_path, model):
+    from assistant import opencode_env
+
+    prompt = "---\nname: recap\n---\n--help"
+    cwd = tmp_path / "prompt-workspace"
+    result = opencode_env.run_prompt(
+        profile, "ops", prompt, cwd=cwd, timeout=5, model=model,
+        extra_args=("--agent", "recap"), extra_env={"EXPLICIT_OVERRIDE": "allowed"},
+    )
+    invocation = fake_opencode.invocation()
+    assert invocation["argv"] == [
+        "run", "--format", "json", "--model", model or profile.settings.model,
+        "--agent", "recap", "--standalone", "--", prompt,
+    ]
+    assert invocation["cwd"] == str(cwd) and invocation["stdin"] == ""
+    assert invocation["env"]["EXPLICIT_OVERRIDE"] == "allowed"
+    assert result.returncode == 0 and json.loads(result.stdout) == invocation
+
+
+def test_run_prompt_rejects_huge_prompt(profile, fake_opencode):
+    from assistant import opencode_env
+
+    with pytest.raises(ValueError, match="prompt"):
+        opencode_env.run_prompt(profile, "ops", "é" * 200_001,
+                                cwd=profile.workspace, timeout=5)
+    assert not fake_opencode.record.exists()
+
+
 @pytest.mark.parametrize("timeout", [None, 0, -1])
 def test_run_rejects_unbounded_or_invalid_timeout(profile, fake_opencode, timeout):
     with pytest.raises(ValueError, match="timeout"):

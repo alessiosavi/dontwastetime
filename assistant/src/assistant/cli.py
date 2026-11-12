@@ -42,7 +42,9 @@ def main(argv=None) -> int:
     ticking = commands.add_parser("tick", help="job periodico (non ancora disponibile)")
     exporting = commands.add_parser("export", help="esporta le conversazioni nuove o aggiornate")
     snapshotting = commands.add_parser("snapshot", help="salva una copia dello stato dwt")
-    for subcommand in (installing, removing, launching, notes, ticking, exporting, snapshotting):
+    recapping = commands.add_parser("recap", help="prepara e invia il riepilogo dell'assistente")
+    recapping.add_argument("--dry-run", action="store_true", help="scrivi i file senza inviare")
+    for subcommand in (installing, removing, launching, notes, ticking, exporting, snapshotting, recapping):
         _common(subcommand, suppress_defaults=True)
     args = parser.parse_args(argv)
     try:
@@ -73,6 +75,30 @@ def main(argv=None) -> int:
 
             path = take_snapshot(load_profile(args.profile, args.state_root), datetime.now(timezone.utc))
             print(f"Copia dello stato: {path}")
+        elif args.command == "recap":
+            from assistant.locks import tick_lock
+            from assistant.recap import (
+                DwtClient, build_recap, deliver_recap, recap_period_start, summarize_with_agent, write_recap,
+            )
+
+            p = load_profile(args.profile, args.state_root)
+            with tick_lock(p) as acquired:
+                if not acquired:
+                    print("Un altro processo dell'assistente è in corso; riprova tra poco.", file=sys.stderr)
+                    return 1
+                now = datetime.now(timezone.utc)
+                with DwtClient(p, now=now) as client:
+                    recap = build_recap(p, recap_period_start(p, now), now, client=client,
+                                        summarize=summarize_with_agent(p))
+                if args.dry_run:
+                    path = write_recap(p, recap, now)
+                    print(f"Recap salvato: {path}")
+                else:
+                    outcome = deliver_recap(p, recap, now)
+                    print({"sent": "Recap inviato.", "skipped": "Recap già preso in carico oggi.",
+                           "failed": "Recap non inviato; riprova più tardi.",
+                           "unknown": "Consegna del recap incerta: controlla la posta."}[outcome])
+                    return 0 if outcome in ("sent", "skipped") else 1
     except (OSError, ValueError, RuntimeError, sqlite3.Error) as error:
         print(f"Assistente: {error}", file=sys.stderr)
         return 1

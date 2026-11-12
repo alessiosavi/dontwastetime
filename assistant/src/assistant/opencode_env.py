@@ -1,6 +1,6 @@
 """Build isolated OpenCode environments and run bounded child processes."""
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 import os
 from pathlib import Path
 import subprocess
@@ -112,4 +112,25 @@ def run_opencode(
     return subprocess.run(
         command, cwd=cwd, env=env, timeout=timeout,
         stdin=subprocess.DEVNULL, capture_output=True, text=True,
+    )
+
+
+def run_prompt(
+    p: Profile,
+    purpose: Purpose,
+    prompt: str,
+    *,
+    cwd: Path,
+    timeout: int,
+    model: str | None = None,
+    extra_args: Sequence[str] = (),
+    extra_env: Mapping[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Pass a bounded prompt as data, including when it starts with a dash."""
+    if len(prompt) > 200_000:
+        raise ValueError("prompt must not exceed 200,000 characters")
+    return run_opencode(
+        p, purpose, ["run", "--format", "json", "--model", model or p.settings.model,
+                     *extra_args, "--", prompt],
+        cwd=cwd, timeout=timeout, extra_env=extra_env,
     )
