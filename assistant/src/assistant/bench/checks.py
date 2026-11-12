@@ -115,6 +115,9 @@ def _claims(reply: str):
             continue
         for tool, verbs in CLAIM_VERBS.items():
             if re.search(rf"^\s*(?:[-*]\s*)?(?:(?:fatto|ok)\s*:\s*)?(?:l['’]ho\s+)?(?:{verbs})\b", sentence, re.I):
+                # "spostata dal cassetto Fatture a Clienti" is a relabel, not a snooze.
+                if tool == "snooze" and re.search(r"cassett|categori", sentence, re.I):
+                    tool = "relabel"
                 yield tool, sentence
 
 
