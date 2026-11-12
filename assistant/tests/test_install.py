@@ -166,6 +166,20 @@ def test_install_is_idempotent(installation):
     assert [c[1] for c in calls(installation) if c[0] == "uv"] == ["venv", "pip", "venv", "pip"]
 
 
+def test_install_omits_harness2_stubs(installation):
+    from assistant.harness_rules import HARNESS2_STUB_PATHS
+
+    source = installation["repo"] / "assistant/harness"
+    for path in HARNESS2_STUB_PATHS:
+        stub = source / path
+        stub.parent.mkdir(parents=True, exist_ok=True)
+        stub.write_text("Ignored placeholder: send_mail")
+    p = do_install(installation, no_launchd=True)
+    assert all((source / path).is_file() for path in HARNESS2_STUB_PATHS)
+    assert all(not (p.root / "harness-live" / path).exists() for path in HARNESS2_STUB_PATHS)
+    assert not list(p.workspace.rglob("README.md"))
+
+
 @pytest.mark.parametrize("profile_name", ["dev", "operator"])
 def test_install_writes_installed_at(installation, profile_name):
     from assistant.markers import load_markers, save_markers

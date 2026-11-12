@@ -15,6 +15,7 @@ import sqlite3
 import subprocess
 import tempfile
 
+from assistant.harness_rules import load_tree, validate_tree
 from assistant.profile import Profile, _dwt_state_dir, _read_object, load_profile
 from assistant.opencode_env import warn_opencode_version
 from assistant.render import render_workspace
@@ -282,10 +283,14 @@ def install(
     harness = p.root / "harness-live"
     from assistant.bench.improve import fingerprint, record_promoted_install
 
+    tree = load_tree(repo / "assistant/harness")
+    validate_tree(tree)
     previous_harness = fingerprint(harness) if harness.is_dir() else None
     if harness.exists():
         shutil.rmtree(harness)
-    shutil.copytree(repo / "assistant/harness", harness)
+    harness.mkdir(mode=0o700, parents=True)
+    for name, text in tree.items():
+        _atomic_write(harness / name, text)
     if p.name == "dev":
         dev_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         _backup(live_db, dev_dir / "dwt.db")

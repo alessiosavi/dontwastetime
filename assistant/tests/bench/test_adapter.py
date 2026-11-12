@@ -42,6 +42,17 @@ def test_adapter_satisfies_protocol(profile, bench_turn):
     assert "Operator: ciao" in adapter.task_prompt("batch-15")
 
 
+def test_adapter_prompts_describe_markdown_only_harness(profile, bench_turn):
+    adapter = make_adapter(profile, [bench_turn])
+    for prompt in (adapter.spec.prompts.work, adapter.task_prompt("batch-15")):
+        assert "solo Markdown" in prompt and "Markdown only" in prompt
+        for path in ("systemprompt.md", "guardrails.md", "LongTermMEMORY.md",
+                     "tool_descriptions/tool_guidance.md", "skills/<nome>/SKILL.md",
+                     "skills/<name>/SKILL.md", "plugin/", "scripts/", "sub_agents/"):
+            assert path in prompt
+        assert "validate_tree" in prompt and "segnaposto" in prompt and "placeholders" in prompt
+
+
 def test_adapter_task_files_include_only_batch_evidence(profile, bench_turn, bench_snapshot, monkeypatch):
     from assistant.bench import judge
 
@@ -64,11 +75,17 @@ def test_adapter_executes_candidate_and_reads_artifacts(profile, bench_turn, ben
     event_runner()
     candidate = tmp_path / "candidate"
     shutil.copytree(HARNESS, candidate)
+    from assistant.harness_rules import HARNESS2_STUB_PATHS
+    for path in HARNESS2_STUB_PATHS:
+        stub = candidate / path
+        stub.parent.mkdir(parents=True, exist_ok=True)
+        stub.write_text("Ignored placeholder: send_mail")
     (candidate / "systemprompt.md").write_text((candidate / "systemprompt.md").read_text() + "\nCANDIDATE_15\n")
     adapter = make_adapter(profile, [bench_turn])
     run_dir = adapter.execute("batch-15", candidate, "operator-oc-agg1/batch-15/base1", timeout=600)
     assert run_dir == profile.bench_dir / "h2/runs/operator-oc-agg1/batch-15/base1"
     assert "CANDIDATE_15" in (run_dir / "session_0/ws/AGENTS.md").read_text()
+    assert not list((run_dir / "session_0/ws").rglob("README.md"))
     assert adapter.delivered(run_dir)
     files = adapter.deliverable_files(run_dir)
     assert list(files) == ["session_0/reply.md"]
@@ -80,6 +97,38 @@ def test_adapter_executes_candidate_and_reads_artifacts(profile, bench_turn, ben
     assert bench_turn.turn_id in trajectory
     (run_dir / "session_0/reply.md").unlink()
     assert not adapter.delivered(run_dir)
+
+
+def test_execute_error_is_recorded(profile, bench_turn, bench_snapshot, tmp_path, caplog):
+    from assistant.h2 import harness2
+    from assistant.harness_rules import load_tree
+
+    harness2()
+    from harness2.core.ledger import Ledger
+    from harness2.core.recursion import _roll
+
+    candidate = tmp_path / "invalid-candidate"
+    shutil.copytree(HARNESS, candidate)
+    (candidate / "plugin").mkdir()
+    (candidate / "plugin/extra.md").write_text("Rejected file.")
+    adapter = make_adapter(profile, [bench_turn])
+    run_id = "invalid-render/candidate1"
+    with pytest.raises(ValueError, match="plugin/extra.md"):
+        adapter.execute("batch-15", candidate, run_id)
+    run_dir = adapter.spec.runs_root / run_id
+    error = (run_dir / "execute_error.txt").read_text()
+    assert "ValueError:" in error and "plugin/extra.md" in error
+    assert "Traceback" in error and "render_workspace" in error
+    assert "Harness² execution failed" in caplog.text and "plugin/extra.md" in caplog.text
+    assert not adapter.delivered(run_dir)
+
+    # Exercise the actual Harness² exception boundary, without proposer/model calls.
+    result = _roll(adapter, Ledger(mode="agg", task_id="batch-15", k=1), "batch-15", "inv1",
+                   load_tree(candidate), lambda _: "invalid-render/upstream",
+                   tmp_path / "h2-work")
+    assert not result.ok and not result.delivered
+    assert "ValueError:" in result.error and "plugin/extra.md" in result.error
+    assert (adapter.spec.runs_root / "invalid-render/upstream/execute_error.txt").is_file()
 
 
 def test_adapter_uses_base_and_seed_snapshot(profile, bench_turn, bench_snapshot, event_runner):

@@ -3,7 +3,9 @@
 from functools import cached_property
 import hashlib
 import json
+import logging
 from pathlib import Path
+import traceback
 
 from assistant.bench import judge, rollout
 from assistant.bench.checks import RolloutTurn
@@ -15,6 +17,23 @@ from assistant.notes_mcp import _atomic_write
 from assistant.profile import Profile
 from assistant.sessions import ToolCall, Turn
 from assistant.snapshot import snapshot_before
+
+
+logger = logging.getLogger(__name__)
+
+_EDITABLE_HARNESS = """L'harness modificabile è solo Markdown: systemprompt.md, guardrails.md,
+LongTermMEMORY.md, tool_descriptions/tool_guidance.md e skills/<nome>/SKILL.md
+(nome con lettere minuscole, cifre e trattini). validate_tree rifiuta plugin/,
+scripts/, sub_agents/ e qualsiasi altro file, inclusi tutti i file non .md.
+Ignora i segnaposto README di Harness²: plugin/README.md, scripts/README.md,
+skills/README.md e sub_agents/README.md; non vengono mai renderizzati o promossi.
+
+The editable harness is Markdown only: systemprompt.md, guardrails.md,
+LongTermMEMORY.md, tool_descriptions/tool_guidance.md and skills/<name>/SKILL.md
+(lowercase letters, digits and hyphens). validate_tree rejects plugin/, scripts/,
+sub_agents/ and any other file, including every non-.md file. Ignore the Harness²
+README stubs: plugin/README.md, scripts/README.md, skills/README.md and
+sub_agents/README.md; they are placeholders and are never rendered or promoted."""
 
 
 class OperatorAdapter:
@@ -36,7 +55,7 @@ class OperatorAdapter:
         return BenchSpec(
             name="operator", runs_root=self.p.bench_dir / "h2/runs",
             install_mode="workspace_agents_md", allow_subagents=False,
-            prompts=BenchPrompts(work="rispondere a Operator in italiano usando dwt",
+            prompts=BenchPrompts(work="rispondere a Operator in italiano usando dwt\n\n" + _EDITABLE_HARNESS,
                                 domain_word="assistente", deliverable_word="risposte"),
             channels={"proposer": channel, "selector": channel},
         )
@@ -58,7 +77,8 @@ class OperatorAdapter:
 
     def task_prompt(self, task_id: str) -> str:
         self._task(task_id)
-        return "\n\n".join(f"## Turno {turn.turn_id}\n\n{rollout.transcript(turn)}" for turn in self.batch)
+        return "\n\n".join([_EDITABLE_HARNESS, *(
+            f"## Turno {turn.turn_id}\n\n{rollout.transcript(turn)}" for turn in self.batch)])
 
     @cached_property
     def _evidence(self) -> dict[str, str]:
@@ -80,18 +100,29 @@ class OperatorAdapter:
     def execute(
         self, task_id: str, harness_dir: Path | None, run_id: str, *, timeout: int | None = None,
     ) -> Path:
-        self._task(task_id)
-        self._evidence  # Freeze before the first paid rollout, including standalone adapter callers.
         root = self.spec.runs_root.resolve()
         directory = (root / run_id).resolve()
         if directory == root or not directory.is_relative_to(root):
             raise ValueError("La directory del run deve restare dentro Harness² runs.")
-        seed_turns = [turn for turn in self.batch if turn.turn_id in self.seeds or getattr(turn, "seed", None)]
-        seed_snapshot = None
-        if seed_turns:
-            seed_snapshot = self.seed_snapshot or snapshot_before(self.p, min(turn.at for turn in seed_turns))
-        rollout.execute_turns(self.p, harness_dir if harness_dir is not None else self.base_harness(),
-                              self.batch, directory, seeds=self.seeds, seed_snapshot=seed_snapshot)
+        try:
+            self._task(task_id)
+            self._evidence  # Freeze before the first paid rollout, including standalone callers.
+            seed_turns = [turn for turn in self.batch if turn.turn_id in self.seeds or getattr(turn, "seed", None)]
+            seed_snapshot = None
+            if seed_turns:
+                seed_snapshot = self.seed_snapshot or snapshot_before(self.p, min(turn.at for turn in seed_turns))
+            rollout.execute_turns(self.p, harness_dir if harness_dir is not None else self.base_harness(),
+                                  self.batch, directory, seeds=self.seeds, seed_snapshot=seed_snapshot)
+            (directory / "execute_error.txt").unlink(missing_ok=True)
+        except Exception:
+            logger.exception("Harness² execution failed for %s in %s", task_id, directory)
+            try:
+                directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+                _atomic_write(directory / "execute_error.txt", traceback.format_exc(limit=-8))
+            except OSError:
+                logger.exception("Could not write execution diagnostics in %s", directory)
+            # Harness² schedule/recursion turn exceptions into failed RunViews.
+            raise
         return directory
 
     def _directory(self, run_dir: Path, turn: Turn) -> Path:

@@ -12,7 +12,7 @@ import pytest
 from assistant.bench import improve
 from assistant.bench.judge import RUBRIC_DIMENSIONS, TurnScore
 from assistant.bench.seed import SeedTurn, SeededTurn
-from assistant.harness_rules import load_tree
+from assistant.harness_rules import HARNESS2_STUB_PATHS, load_tree, strip_harness2_stubs, validate_tree
 from assistant.markers import load_markers
 from assistant.sessions import ToolCall, Turn
 from assistant.spend import record_usage
@@ -52,7 +52,8 @@ def rig(profile, bench_snapshot, monkeypatch):
             kwargs["runs_root"], task_id) / "harnesses/composed1"
         if directory.exists():
             shutil.rmtree(directory)
-        shutil.copytree(HARNESS, directory)
+        h2 = improve.harness2()
+        h2.tree.write_tree(h2.OPENCODE_SURFACE, load_tree(HARNESS), directory)
         path = directory / "systemprompt.md"
         path.write_text(path.read_text() + "\nUsa risposte brevi.\n")
         record_usage(profile, "fake:" + kwargs["tag"], datetime.now(timezone.utc),
@@ -380,6 +381,43 @@ def test_promote_copies_validated_tree(rig, tmp_path):
     (directory / "candidate/scripts/evil.sh").write_text("evil")
     with pytest.raises(ValueError):
         improve.promote(rig.p, directory.name, repo)
+
+
+def test_harness2_stubs_are_ignored_not_rendered_not_promoted(rig, tmp_path, monkeypatch):
+    from assistant.render import render_workspace
+
+    directory = improve.run_improvement(rig.p, NOW)
+    candidate = directory / "candidate"
+    clean = load_tree(candidate)
+    assert all(not (candidate / path).exists() for path in HARNESS2_STUB_PATHS)
+    # Arbitrary stub contents never participate in validation, budgets or fingerprints.
+    sentinel = "HARNESS2_STUB_MUST_NOT_RENDER send_mail\n" + "x" * 24_001
+    raw = {**clean, **dict.fromkeys(HARNESS2_STUB_PATHS, sentinel)}
+    assert validate_tree(raw) is None
+    assert strip_harness2_stubs(raw) == clean
+    assert HARNESS2_STUB_PATHS <= raw.keys()  # Filtering must not mutate the caller's tree.
+    h2 = improve.harness2()
+    h2.tree.write_tree(h2.OPENCODE_SURFACE, raw, candidate)
+    assert load_tree(candidate) == clean
+    assert improve.fingerprint(candidate) == read(directory / "gate.json")["candidate_fingerprint"]
+
+    original = h2.render_opencode_tree
+    def render(staged, dest, ctx):
+        assert all(not (staged / path).exists() for path in HARNESS2_STUB_PATHS)
+        return original(staged, dest, ctx)
+    monkeypatch.setattr(h2, "render_opencode_tree", render)
+    workspace = render_workspace(rig.p, candidate)
+    rendered_files = [path for path in workspace.rglob("*") if path.is_file()]
+    assert all("HARNESS2_STUB_MUST_NOT_RENDER" not in path.read_text() for path in rendered_files)
+    assert not list(workspace.rglob("README.md"))
+
+    repo = tmp_path / "repo"
+    shutil.copytree(HARNESS, repo / "assistant/harness")
+    changed = improve.promote(rig.p, directory.name, repo)
+    target = repo / "assistant/harness"
+    assert changed
+    assert load_tree(target) == clean
+    assert all(not (target / path).exists() for path in HARNESS2_STUB_PATHS)
 
 
 def test_promote_refuses_candidate_changed_after_evaluation(rig, tmp_path):

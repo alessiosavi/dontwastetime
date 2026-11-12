@@ -11,7 +11,7 @@ import time
 from types import SimpleNamespace
 
 from assistant.h2 import harness2
-from assistant.harness_rules import load_tree, validate_tree
+from assistant.harness_rules import HARNESS2_STUB_PATHS, load_tree, validate_tree
 from assistant.profile import Profile
 
 
@@ -208,6 +208,8 @@ def render_workspace(
     try:
         # Staging dereferences links; check the exact snapshot the renderer will consume.
         validate_tree(load_tree(install.staging_dir))
+        for path in HARNESS2_STUB_PATHS:
+            (install.staging_dir / path).unlink(missing_ok=True)
         with tempfile.TemporaryDirectory(prefix="assistant-render-") as temporary:
             rendered = Path(temporary) / "rendered"
             h2.render_opencode_tree(install.staging_dir, rendered, ctx)
