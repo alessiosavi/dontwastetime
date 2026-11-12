@@ -5,7 +5,7 @@ LABEL   := com.local.dontwastetime
 PLIST   := $(HOME)/Library/LaunchAgents/$(LABEL).plist
 STATE   ?= $(HOME)/Library/Application Support/dontwastetime
 
-.PHONY: build check test install install-agent uninstall-agent render-plist
+.PHONY: build check test install install-agent uninstall-agent render-plist assistant-check
 
 build:
 	go build -ldflags "-X main.version=$(VERSION)" -o $(BIN) ./cmd/dwt
@@ -17,6 +17,9 @@ check:
 
 test:
 	go test -race ./...
+
+assistant-check:
+	cd assistant && uv run pytest -q
 
 # install = build + launchd agent. Run it from the checkout that holds
 # config.json, .env and taxonomy.json: that directory is the agent's

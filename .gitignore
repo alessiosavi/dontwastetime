@@ -9,3 +9,7 @@ bin/
 *.db-shm
 # agent workspaces
 .worktrees/
+# Python assistant
+assistant/.venv/
+__pycache__/
+.pytest_cache/
