@@ -46,7 +46,10 @@ def main(argv=None) -> int:
     snapshotting = commands.add_parser("snapshot", help="salva una copia dello stato dwt")
     recapping = commands.add_parser("recap", help="prepara e invia il riepilogo dell'assistente")
     recapping.add_argument("--dry-run", action="store_true", help="scrivi i file senza inviare")
-    for subcommand in (installing, removing, launching, notes, ticking, exporting, snapshotting, recapping):
+    tone_card = commands.add_parser("tone-card", help="prepara una bozza della scheda di tono (solo dev)")
+    for subcommand in (
+        installing, removing, launching, notes, ticking, exporting, snapshotting, recapping, tone_card,
+    ):
         _common(subcommand, suppress_defaults=True)
     args = parser.parse_args(argv)
     try:
@@ -78,6 +81,13 @@ def main(argv=None) -> int:
 
             path = take_snapshot(load_profile(args.profile, args.state_root), datetime.now(timezone.utc))
             print(f"Copia dello stato: {path}")
+        elif args.command == "tone-card":
+            from assistant.tone import generate_tone_card
+
+            if args.profile != "dev":
+                raise ValueError("La scheda di tono si genera solo con il profilo dev, sulla copia del database.")
+            path = generate_tone_card(load_profile(args.profile, args.state_root))
+            print(f"Bozza della scheda di tono da rivedere: {path}")
         elif args.command == "recap":
             from assistant.locks import tick_lock
             from assistant.recap import (
