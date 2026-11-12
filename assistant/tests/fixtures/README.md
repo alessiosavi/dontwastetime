@@ -194,4 +194,4 @@ no extra tools, zero costs, no secret/home-path leakage, and all nine documented
 question statuses. It also re-runs the actual Harness² parser helpers on the final
 fixture through the guarded importer. Results are reported with exit status; this
 is fixture verification, not a product test suite. Claude's independent Q1/Q3/Q5
-reruns remain pending.
+reruns are recorded in `assistant/docs/opencode-2.2.7.md` ("Claude verification").

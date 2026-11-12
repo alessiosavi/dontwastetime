@@ -11,7 +11,7 @@ The four deliverables are self-contained evidence; raw captures and probe script
 remain at `/tmp/dwt-dev/task1/scratch/`. Outputs below are trimmed,
 not synthetic. `VERIFIED` marks the measured answer, including negative answers;
 it does not imply every future integration or security property was tested.
-Claude's independent acceptance reruns of Q1, Q3 and Q5 are still pending.
+Claude's independent reruns of Q1, Q3 and Q5 are recorded in the final section, "Claude verification", which also corrects the isolation recipe (do not set `OPENCODE_DISABLE_PROJECT_CONFIG`).
 
 ## 1. Isolation — VERIFIED
 
