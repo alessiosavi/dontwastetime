@@ -16,7 +16,9 @@ from assistant.locks import tick_lock
 from assistant.markers import Markers, load_markers, save_markers
 from assistant.notes_mcp import _require_aware
 from assistant.profile import Profile, Settings
-from assistant.recap import build_recap, deliver_recap, mail_freshness, reconcile_claim, summarize_with_agent
+from assistant.recap import (
+    build_recap, deliver_recap, mail_freshness, recap_recipient, reconcile_claim, summarize_with_agent,
+)
 from assistant.sessions import export_new_sessions
 from assistant.snapshot import _snapshots, prune_snapshots, take_snapshot, ui_active
 from assistant.status import ack_status, record_status
@@ -54,6 +56,7 @@ def _recap(p: Profile, now: datetime) -> bool:
     today = now.astimezone(ROME).date()
     if m.recap_claim == f"recap:{today.isoformat()}":
         return True
+    recap_recipient(p)
     with DwtClient(p, now=now) as client:
         if (mail_freshness(client, now) > timedelta(minutes=15)
                 and (m.recap_deferred_at is None or m.recap_deferred_at.astimezone(ROME).date() != today)):

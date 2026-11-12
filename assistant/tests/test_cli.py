@@ -29,11 +29,13 @@ def test_cli_passes_install_options(tmp_path, monkeypatch):
     assert cli.main([
         "install", "--repo", str(tmp_path), "--profile", "dev", "--state-root", str(tmp_path / "state"),
         "--dev-recipient", "dev@example.com", "--provider-json", str(tmp_path / "provider.json"),
+        "--recap-recipient", "operator@example.com",
         "--desktop-launcher", "--no-launchd",
     ]) == 0
     assert calls == [(("dev",), {
         "repo": tmp_path, "state_root": tmp_path / "state", "dev_recipient": "dev@example.com",
         "provider_json": tmp_path / "provider.json", "desktop_launcher": True, "no_launchd": True,
+        "recap_recipient": "operator@example.com",
     })]
 
 

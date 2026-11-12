@@ -23,6 +23,7 @@ def fake_tools(tmp_path, monkeypatch):
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("DWT_CONFIG", str(tmp_path / "live-config.json"))
+    monkeypatch.delenv("DWT_STATE_DIR", raising=False)
     monkeypatch.chdir(tmp_path)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
@@ -36,6 +37,7 @@ def fake_tools(tmp_path, monkeypatch):
             "data = {'argv': sys.argv[1:], 'env': dict(os.environ), "
             "'cwd': os.getcwd(), 'stdin': sys.stdin.read()}\n"
             f"pathlib.Path({str(record)!r}).write_text(json.dumps(data))\n"
+            + ("if sys.argv[1:] == ['--version']: print('2.2.7'); sys.exit(0)\n" if name == "opencode" else "") +
             "if '--fake-sleep' in sys.argv: time.sleep(30)\n"
             "print(json.dumps(data))\n"
             "if '--fake-fail' in sys.argv:\n"

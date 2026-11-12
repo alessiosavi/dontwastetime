@@ -22,6 +22,8 @@ class Settings:
     secrets_env: Path = Path("secrets.env")
     provider: dict = field(default_factory=dict)
     model_cost: dict | None = None
+    recap_recipient: str | None = None
+    dwt_state_dir: str | None = None
 
 
 @dataclass(frozen=True)
@@ -64,9 +66,11 @@ class Profile:
 
     @property
     def dwt_state_dir(self) -> Path:
+        if self.settings.dwt_state_dir:
+            return Path(self.settings.dwt_state_dir).expanduser().resolve()
         if self.name == "dev":
             return self.root / "dwt"
-        return _dwt_state_dir(self.settings.dwt_config)
+        return _dwt_state_dir(self.settings.dwt_config, self.settings.dwt_env)
 
 
 def _read_object(path: Path) -> dict:
@@ -83,8 +87,24 @@ def _read_object(path: Path) -> dict:
     return data
 
 
-def _dwt_state_dir(config: Path) -> Path:
-    state_dir = _read_object(config).get("state_dir")
+def _dwt_state_dir(config: Path, env_file: Path | None = None) -> Path:
+    """Match dwt's state precedence without loading credentials into the process."""
+    state_dir = os.environ.get("DWT_STATE_DIR")
+    if state_dir is None:
+        try:
+            with (env_file if env_file is not None else config.parent / ".env").open(encoding="utf-8") as source:
+                for line in source:
+                    key, separator, value = line.strip().removeprefix("export ").partition("=")
+                    if separator and key.strip() == "DWT_STATE_DIR":
+                        value = value.strip()
+                        if len(value) >= 2 and value[0] in ("'", '"') and value[-1] == value[0]:
+                            value = value[1:-1]
+                        state_dir = value
+                        break
+        except FileNotFoundError:
+            pass
+    if not state_dir:
+        state_dir = _read_object(config).get("state_dir")
     if not state_dir:
         return Path.home() / "Library" / "Application Support" / "dontwastetime"
     if not isinstance(state_dir, str):
@@ -128,6 +148,9 @@ def load_profile(name: str, state_root: Path | None = None) -> Profile:
         raise ValueError(f"{settings_path}: provider must be an object")
     if values.get("model_cost") is not None and not isinstance(values["model_cost"], dict):
         raise ValueError(f"{settings_path}: model_cost must be an object or null")
+    for key in ("recap_recipient", "dwt_state_dir"):
+        if values.get(key) is not None and not isinstance(values[key], str):
+            raise ValueError(f"{settings_path}: {key} must be a string or null")
     try:
         settings = Settings(**values)
     except TypeError as error:

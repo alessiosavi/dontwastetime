@@ -87,6 +87,17 @@ def test_recap_due_once_per_day(profile, jobs):
     assert len(jobs.exports) == 4  # Daily recap refreshes exports before building.
 
 
+def test_invalid_recipient_prevents_recap_export_and_paid_summary(profile, jobs, monkeypatch):
+    profile.settings.dwt_config.write_text('{"digest_recipients": []}')
+    monkeypatch.setattr(jobs.runtime, "DwtClient", lambda *a, **kw: pytest.fail("build before validation"))
+    monkeypatch.setattr(jobs.runtime, "summarize_with_agent", lambda p: pytest.fail("paid work before validation"))
+    save_markers(profile, Markers(installed_at=at("2026-11-11T09:00")))
+    with pytest.raises(ValueError, match="recap_recipient"):
+        jobs.runtime._recap(profile, at("2026-11-12T09:00"))
+    assert jobs.exports == [] and jobs.sends == []
+    assert load_markers(profile).recap_claim is None
+
+
 def test_recap_weekend_gap_one_recap_monday(profile, jobs):
     friday = at("2026-11-13T09:00")
     save_markers(profile, Markers(installed_at=friday, last_recap_end=friday,

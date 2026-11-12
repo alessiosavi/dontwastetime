@@ -61,28 +61,34 @@ def _opening(text: str) -> str:
     return " ".join(re.split(r"(?<=[.!?])\s+", _line(text))[:3])
 
 
-def _output(call: ToolCall) -> dict:
-    try:
-        data = json.loads(call.output)
-    except (ValueError, TypeError):
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
-def _action(call: ToolCall) -> str:
-    output = _output(call)
-    mail = output.get("untrusted", output)
-    sender = mail.get("from_name") or mail.get("from") or mail.get("sender")
-    subject = mail.get("subject")
-    obj = " · ".join(_line(value) for value in (sender, subject) if value)
-    if not obj:
-        obj = _line(call.args.get("thread") or output.get("thread") or call.args.get("id")
-                    or call.args.get("inbound_id") or "riferimento non disponibile")
-        if obj.isdecimal():
-            obj = f"#{obj}"
+def _action(call: ToolCall, client: DwtClient, messages: dict[int, str], buckets: dict[str, str]) -> str:
+    if call.tool in ("mark_handled", "snooze"):
+        ref = call.args.get("inbound_id")
+    elif call.tool == "relabel":
+        ref = call.args.get("id")
+    else:
+        ref = call.args.get("thread")
+    # Older exports may omit inbound_id; retain their thread reference.
+    if ref is None:
+        ref = call.args.get("thread")
+    obj = _line(ref) or "riferimento non disponibile"
+    if (isinstance(ref, int) and not isinstance(ref, bool) and ref > 0
+            or isinstance(ref, str) and re.fullmatch(r"#?[0-9]+", ref)):
+        message_id = int(str(ref).removeprefix("#"))
+        if message_id not in messages:
+            messages[message_id] = f"#{message_id}"
+            try:
+                mail = client.call("get_message", {"id": message_id})["untrusted"]
+                sender = _line(mail.get("from_name") or mail.get("from"))
+                subject = _line(mail.get("subject"))
+                if sender and subject:
+                    messages[message_id] = f"«{subject}» di {sender} (#{message_id})"
+            except Exception:
+                pass  # Missing/deleted mail must not hide the completed action.
+        obj = messages[message_id]
     verbs = {"mark_handled": "chiusa", "mute_thread": "silenziata", "reopen": "riaperta"}
     if call.tool == "snooze":
-        until = output.get("snoozed_until") or call.args.get("until", "")
+        until = call.args.get("until", "")
         try:
             at = datetime.fromisoformat(until)
             day = at.astimezone(ROME).date() if at.utcoffset() is not None else at.date()
@@ -91,10 +97,11 @@ def _action(call: ToolCall) -> str:
             pass
         verb = f"rimandata al {_line(until)}"
     elif call.tool == "relabel":
-        verb = f"riclassificata come {_line(output.get('new') or call.args.get('bucket'))}"
+        bucket = _line(call.args.get("bucket"))
+        verb = f"riclassificata come {_line(buckets.get(bucket) or bucket)}"
     else:
         verb = verbs[call.tool]
-    return f"{verb} · {obj}"
+    return f"{verb}: {obj}"
 
 
 def _oldest_sync(client: DwtClient) -> datetime | None:
@@ -199,8 +206,16 @@ def build_recap(
     preamble = "\n".join(blocks)
     sections = []
     if activity:
-        actions = [_action(call) for turn in turns for call in turn.tool_calls
-                   if call.server == "dwt" and call.tool in TRIAGE_TOOLS and call.ok]
+        calls = [call for turn in turns for call in turn.tool_calls
+                 if call.server == "dwt" and call.tool in TRIAGE_TOOLS and call.ok]
+        buckets = {}
+        if any(call.tool == "relabel" for call in calls):
+            try:
+                buckets = {bucket["key"]: bucket["title"] for bucket in client.call("context")["buckets"]}
+            except Exception:
+                pass
+        messages = {}
+        actions = [_action(call, client, messages, buckets) for call in calls]
         sections.extend([
             _section("Fatto", actions[:40] + ([f"e altre {len(actions) - 40} azioni"] if len(actions) > 40 else [])),
             _section("Ancora aperto", [_reply(item) for item in replies[:5]]
@@ -345,6 +360,20 @@ def reconcile_claim(p: Profile, now: datetime) -> None:
         save_markers(p, markers)
 
 
+def recap_recipient(p: Profile) -> str:
+    """Validate the selected recipient against the profile's current allowlist."""
+    recipients = _read_object(p.settings.dwt_config).get("digest_recipients")
+    recipient = p.settings.recap_recipient
+    if recipient is None and isinstance(recipients, list) and len(recipients) == 1:
+        recipient = recipients[0]  # Compatibility with older settings.json files.
+    if (not isinstance(recipient, str) or not recipient.strip()
+            or not isinstance(recipients, list)
+            or not any(isinstance(value, str) and value.casefold() == recipient.casefold()
+                       for value in recipients)):
+        raise ValueError("Configura recap_recipient con un indirizzo presente in digest_recipients.")
+    return recipient
+
+
 def deliver_recap(p: Profile, recap: Recap, now: datetime) -> Delivery:
     """Caller MUST hold tick_lock(p), including while building this recap.
 
@@ -360,19 +389,16 @@ def deliver_recap(p: Profile, recap: Recap, now: datetime) -> Delivery:
     if markers.recap_claim == claim:
         return _log(p, now, "skipped", "existing_claim")
     try:
-        recipients = _read_object(p.settings.dwt_config).get("digest_recipients")
+        recipient = recap_recipient(p)
     except (OSError, ValueError):
-        return _log(p, now, "failed", "recipient_config_unreadable")
-    if (not isinstance(recipients, list) or len(recipients) != 1
-            or not isinstance(recipients[0], str) or not recipients[0].strip()):
-        return _log(p, now, "failed", "recipient_must_be_single")
+        return _log(p, now, "failed", "recipient_invalid")
     markers.recap_claim = claim
     markers.recap_claim_start, markers.recap_claim_end = recap.period_start, recap.period_end
     save_markers(p, markers)
     try:
         result = subprocess.run([
             p.settings.dwt_bin, "send-note", "--config", str(p.settings.dwt_config),
-            "--env", str(p.settings.dwt_env), "--state-dir", str(p.dwt_state_dir), "--to", recipients[0],
+            "--env", str(p.settings.dwt_env), "--state-dir", str(p.dwt_state_dir), "--to", recipient,
             "--subject", recap.subject, "--file", str(path),
         ], env={key: os.environ[key] for key in ("PATH", "HOME", "LANG") if key in os.environ},
             timeout=120, stdin=subprocess.DEVNULL, capture_output=True)

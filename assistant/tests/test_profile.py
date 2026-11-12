@@ -1,5 +1,6 @@
 from dataclasses import FrozenInstanceError
 import json
+import os
 from pathlib import Path
 import stat
 
@@ -25,6 +26,8 @@ def test_load_profile_reads_settings_and_defaults(tmp_path):
     assert p.settings.dwt_bin == "dwt"
     assert p.settings.provider == provider
     assert p.settings.model_cost is None
+    assert p.settings.recap_recipient is None
+    assert p.settings.dwt_state_dir is None
     assert p.settings.dwt_config == root / "dwt" / "config.json"
     assert p.settings.dwt_env == root / "dwt" / ".env"
     assert p.settings.secrets_env == root / "secrets.env"
@@ -111,6 +114,54 @@ def test_operator_state_dir_comes_from_profile_config(tmp_path):
     assert p.dwt_state_dir == state
     config.write_text("{}")
     assert p.dwt_state_dir == Path.home() / "Library/Application Support/dontwastetime"
+
+
+@pytest.mark.parametrize("level", ["process", "env_file", "config", "default"])
+def test_dwt_state_dir_precedence(tmp_path, monkeypatch, level, capsys):
+    from assistant.profile import _dwt_state_dir
+
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps({"state_dir": str(tmp_path / "configured")} if level != "default" else {}))
+    env_file = tmp_path / "dwt.env"
+    env_file.write_text("SECRET=must-not-be-loaded-or-printed\nnot even an assignment\n" + (
+        f"export DWT_STATE_DIR = '{tmp_path / 'from env'}'\nDWT_STATE_DIR=ignored-duplicate\n"
+        if level in ("process", "env_file") else ""
+    ))
+    if level == "process":
+        monkeypatch.setenv("DWT_STATE_DIR", str(tmp_path / "process"))
+    expected = {"process": tmp_path / "process", "env_file": tmp_path / "from env",
+                "config": tmp_path / "configured",
+                "default": Path.home() / "Library/Application Support/dontwastetime"}[level]
+    assert _dwt_state_dir(config, env_file) == expected
+    assert "SECRET" not in os.environ
+    assert "must-not-be-loaded-or-printed" not in repr(capsys.readouterr())
+
+
+def test_default_profile_location_uses_repo_env_file(tmp_path, monkeypatch):
+    config = tmp_path / "config.json"
+    config.write_text('{}')
+    (tmp_path / ".env").write_text(f'DWT_STATE_DIR="{tmp_path / "from env"}"\n')
+    monkeypatch.setenv("DWT_CONFIG", str(config))
+    p = load_profile("operator")
+    assert p.root == tmp_path / "from env/assistant/operator"
+    assert p.dwt_state_dir == tmp_path / "from env"
+
+
+@pytest.mark.parametrize("name", ["dev", "operator"])
+def test_stored_state_dir_wins_over_runtime_environment(tmp_path, monkeypatch, name):
+    p = load_profile(name, state_root=tmp_path)
+    stored = tmp_path / "installed state"
+    (p.root / "settings.json").write_text(json.dumps({"dwt_state_dir": str(stored)}))
+    monkeypatch.setenv("DWT_STATE_DIR", str(tmp_path / "different state"))
+    assert load_profile(name, state_root=tmp_path).dwt_state_dir == stored
+
+
+def test_older_operator_settings_use_configured_dwt_env(tmp_path):
+    p = load_profile("operator", state_root=tmp_path)
+    env_file = tmp_path / "custom.env"
+    env_file.write_text(f'DWT_STATE_DIR={tmp_path / "custom state"}\n')
+    (p.root / "settings.json").write_text(json.dumps({"dwt_env": str(env_file)}))
+    assert load_profile("operator", state_root=tmp_path).dwt_state_dir == tmp_path / "custom state"
 
 
 @pytest.mark.parametrize("contents", ["{bad", "[]"])

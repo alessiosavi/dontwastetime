@@ -44,6 +44,11 @@ class MailState:
                 {"last_sync_completed_at": NOW.isoformat()},
                 {"last_sync_completed_at": self.synced.isoformat() if self.synced else None},
             ]}
+        if tool == "get_message":
+            return {"id": args["id"], "untrusted": {"from_name": "Colleague", "from": "colleague@example.com",
+                    "subject": "Fattura", "preview": "", "body": ""}}
+        if tool == "context":
+            return {"buckets": [{"key": "clienti", "title": "Clienti e preventivi"}]}
         assert tool == "needs_reply"
         offset = int((args or {}).get("cursor", 0))
         page = self.items[offset:offset + 100]
@@ -117,27 +122,59 @@ def test_fatto_lists_only_successful_triage_calls(profile):
     from assistant.recap import build_recap
 
     calls = [
-        ToolCall("dwt", "mark_handled", {"thread": "#12"}, True,
-                 json.dumps({"untrusted": {"from_name": "Colleague", "subject": "Fattura"}})),
-        ToolCall("dwt", "snooze", {"thread": "#13", "until": "2026-11-13"}, False, "errore"),
+        ToolCall("dwt", "mark_handled", {"thread": "c:invoice", "inbound_id": 12}, True,
+                 '{"thread":"c:invoice","state":"handled","due_at":null,"snoozed_until":null}'),
+        ToolCall("dwt", "snooze", {"thread": "c:failed", "inbound_id": 13, "until": "2026-11-13"}, False, "errore"),
         ToolCall("notes", "mark_handled", {"thread": "#99"}, True, ""),
         ToolCall("dwt", "search", {}, True, ""),
     ]
     export_turn(profile, calls=calls, sid="z_first")
     export_turn(profile, at=NOW - timedelta(hours=1), calls=[
-        ToolCall("dwt", "snooze", {"thread": "c:later", "until": "2026-11-13"}, True, "{}"),
-        ToolCall("dwt", "relabel", {"id": 15, "bucket": "clienti"}, True, '{"new":"clienti"}'),
-        ToolCall("dwt", "mute_thread", {"thread": "#16"}, True, "{}"),
-        ToolCall("dwt", "reopen", {"thread": "#17"}, True, "{}"),
+        ToolCall("dwt", "snooze", {"thread": "c:invoice", "inbound_id": 12, "until": "2026-11-13"}, True,
+                 '{"thread":"c:invoice","state":"snoozed","due_at":null,"snoozed_until":"2026-11-13T08:00:00+01:00"}'),
+        ToolCall("dwt", "relabel", {"id": 15, "bucket": "clienti"}, True, '{"old":"altro","new":"clienti","state":"open"}'),
+        ToolCall("dwt", "mute_thread", {"thread": "c:muted"}, True,
+                 '{"thread":"c:muted","state":"muted","due_at":null,"snoozed_until":null}'),
+        ToolCall("dwt", "reopen", {"thread": "#16"}, True,
+                 '{"thread":"c:reopened","state":"open","due_at":null,"snoozed_until":null}'),
     ], sid="a_later")
     for at, sid in ((START - timedelta(seconds=2), "old"), (NOW, "future")):
         export_turn(profile, at=at, calls=[ToolCall("dwt", "reopen", {"thread": "#999"}, True, "")], sid=sid)
-    recap = build_recap(profile, START, NOW, client=MailState(), summarize=lambda turns: "Apertura.")
+    mail = MailState()
+    recap = build_recap(profile, START, NOW, client=mail, summarize=lambda turns: "Apertura.")
     fatto = recap.text.split("Fatto\n")[1].split("\n\n")[0]
     assert fatto.splitlines() == [
-        "- chiusa · Colleague · Fattura", "- rimandata al 13 novembre · c:later",
-        "- riclassificata come clienti · #15", "- silenziata · #16", "- riaperta · #17",
+        "- chiusa: «Fattura» di Colleague (#12)", "- rimandata al 13 novembre: «Fattura» di Colleague (#12)",
+        "- riclassificata come Clienti e preventivi: «Fattura» di Colleague (#15)",
+        "- silenziata: c:muted", "- riaperta: «Fattura» di Colleague (#16)",
     ]
+    assert [args for tool, args in mail.calls if tool == "get_message"] == [{"id": 12}, {"id": 15}, {"id": 16}]
+    assert sum(tool == "context" for tool, _ in mail.calls) == 1
+
+
+def test_fatto_lookup_failures_keep_ids_and_cache_errors(profile):
+    from assistant.dwt_client import DwtError
+    from assistant.recap import build_recap
+
+    class UnavailableMail(MailState):
+        def call(self, tool, args=None):
+            if tool in ("get_message", "context"):
+                self.calls.append((tool, args))
+                raise DwtError("not found")
+            return super().call(tool, args)
+
+    export_turn(profile, calls=[
+        ToolCall("dwt", "mark_handled", {"thread": "c:raw-key", "inbound_id": 12}, True,
+                 '{"thread":"c:raw-key","state":"handled","due_at":null,"snoozed_until":null}'),
+        ToolCall("dwt", "relabel", {"id": 12, "bucket": "clienti"}, True,
+                 '{"old":"altro","new":"clienti","state":"open"}'),
+    ])
+    mail = UnavailableMail()
+    recap = build_recap(profile, START, NOW, client=mail, summarize=lambda turns: "")
+    assert "- chiusa: #12" in recap.text
+    assert "- riclassificata come clienti: #12" in recap.text
+    assert "c:raw-key" not in recap.text
+    assert [args for tool, args in mail.calls if tool == "get_message"] == [{"id": 12}]
 
 
 def test_sections_in_fixed_order(profile):
@@ -176,7 +213,7 @@ def test_action_completed_after_boundary_counted_next_recap(profile, completed_a
                                   summarize=lambda turns: pytest.fail("completion is outside this period"))
     assert not refreshed_first.activity and "#across-boundary" not in refreshed_first.text
     second = build_recap(profile, NOW, NOW + timedelta(days=1), client=MailState(), summarize=lambda turns: "")
-    assert second.activity and second.text.count("chiusa · #across-boundary") == 1
+    assert second.activity and second.text.count("chiusa: #across-boundary") == 1
     third = build_recap(profile, NOW + timedelta(days=1), NOW + timedelta(days=2),
                         client=MailState(), summarize=lambda turns: "")
     assert not third.activity and "#across-boundary" not in third.text
@@ -202,7 +239,7 @@ def test_first_recap_includes_activity_since_install_marker(profile):
     recap = build_recap(profile, recap_period_start(profile, NOW), NOW,
                         client=MailState(), summarize=lambda turns: "")
     assert recap.period_start == START
-    assert "chiusa · #since-install" in recap.text
+    assert "chiusa: #since-install" in recap.text
 
 
 def test_notes_section_lists_notes_added_in_period(profile):
@@ -452,7 +489,7 @@ def test_recap_includes_and_acks_status(profile, recap_dwt):
 
 
 @pytest.mark.parametrize("recipients", [[], ["a@example.com", "b@example.com"], "a@example.com", [""]])
-def test_recipient_must_be_single(profile, recap_dwt, recipients):
+def test_legacy_recipient_requires_unambiguous_digest_default(profile, recap_dwt, recipients):
     from assistant.recap import deliver_recap
 
     profile.settings.dwt_config.write_text(json.dumps({"digest_recipients": recipients}))
@@ -461,6 +498,46 @@ def test_recipient_must_be_single(profile, recap_dwt, recipients):
     assert trace_rows(recap_dwt[1]) == []
     assert (profile.memory_dir / "recap/2026-11-12.md").exists()
     assert "recipient" in (profile.logs_dir / "recap.log").read_text()
+
+
+def test_explicit_recap_recipient_with_multiple_digest_recipients(profile, recap_dwt):
+    from assistant.recap import deliver_recap, recap_recipient
+
+    profile.settings.dwt_config.write_text(json.dumps({
+        "digest_recipients": ["dev@example.com", "other@example.com"],
+    }))
+    p = replace(profile, settings=replace(profile.settings, recap_recipient="DEV@example.com"))
+    assert recap_recipient(p) == "DEV@example.com"
+    assert deliver_recap(p, recap_value(), NOW) == "sent"
+    row, = trace_rows(recap_dwt[1])
+    assert row["argv"][row["argv"].index("--to") + 1] == "DEV@example.com"
+
+
+def test_recap_recipient_rechecks_current_config_before_claim(profile, recap_dwt):
+    from assistant.recap import deliver_recap, recap_recipient
+
+    p = replace(profile, settings=replace(profile.settings, recap_recipient="dev@example.com"))
+    assert recap_recipient(p) == "dev@example.com"
+    p.settings.dwt_config.write_text('{"digest_recipients": ["other@example.com"]}')
+    with pytest.raises(ValueError, match="recap_recipient"):
+        recap_recipient(p)
+    assert deliver_recap(p, recap_value(), NOW) == "failed"
+    assert load_markers(p).recap_claim is None
+    assert trace_rows(recap_dwt[1]) == []
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_cli_invalid_recipient_prevents_export_and_paid_summary(profile, recap_dwt, monkeypatch, dry_run):
+    from assistant import cli, recap, sessions
+
+    profile.settings.dwt_config.write_text('{"digest_recipients": []}')
+    monkeypatch.setattr(sessions, "export_new_sessions", lambda p: pytest.fail("export before validation"))
+    monkeypatch.setattr(recap, "DwtClient", lambda *a, **kw: pytest.fail("build before validation"))
+    monkeypatch.setattr(recap, "summarize_with_agent", lambda p: pytest.fail("paid work before validation"))
+    args = ["recap", "--profile", "dev", "--state-root", str(profile.root.parents[1])]
+    assert cli.main(args + (["--dry-run"] if dry_run else [])) == 1
+    assert load_markers(profile).recap_claim is None
+    assert trace_rows(recap_dwt[1]) == []
 
 
 def test_summarizer_failure_does_not_block(profile):
@@ -472,7 +549,7 @@ def test_summarizer_failure_does_not_block(profile):
         raise RuntimeError("summary unavailable")
 
     recap = build_recap(profile, START, NOW, client=MailState(), summarize=broken)
-    assert recap.text.startswith("Fatto\n- chiusa · #4")
+    assert recap.text.startswith("Fatto\n- chiusa: «Fattura» di Colleague (#4)")
 
 
 @pytest.mark.parametrize("dry_run", [True, False])
@@ -542,7 +619,7 @@ def test_manual_recap_deferred_when_export_fails(profile, recap_dwt, monkeypatch
 
     monkeypatch.setattr(sessions, "export_new_sessions", fresh_export)
     assert cli.main(args) == 0
-    assert "chiusa · #fresh" in (profile.memory_dir / "recap/latest.md").read_text()
+    assert "chiusa: #fresh" in (profile.memory_dir / "recap/latest.md").read_text()
     assert len(trace_rows(recap_dwt[1])) == (0 if dry_run else 1)
 
 
@@ -593,7 +670,7 @@ def test_manual_recap_reconciles_claim_first(profile, recap_dwt, monkeypatch, sa
         assert snapshot.last_recap_day == date(2026, 11, 11)
         assert snapshot.last_recap_end == START and snapshot.recap_claim == "recap:2026-11-11"
         assert row["markers"]["recap_claim_start"] == START.isoformat()
-        assert "#already-claimed" not in row["text"] and "chiusa · #new" in row["text"]
+        assert "#already-claimed" not in row["text"] and "chiusa: #new" in row["text"]
         assert "Il recap del mercoledì 11 novembre potrebbe non essere arrivato: controlla la posta." in row["text"]
         assert markers.last_recap_end == NOW
     assert markers.last_recap_day == date(2026, 11, 12)

@@ -16,6 +16,7 @@ import subprocess
 import tempfile
 
 from assistant.profile import Profile, _dwt_state_dir, _read_object, load_profile
+from assistant.opencode_env import warn_opencode_version
 from assistant.render import render_workspace
 
 
@@ -193,13 +194,16 @@ def install(
     profile: str, *, repo: Path, state_root: Path | None = None,
     dev_recipient: str | None = None, desktop_launcher: bool = False,
     provider_json: Path | None = None, no_launchd: bool = False,
+    recap_recipient: str | None = None,
 ) -> Profile:
     """Refresh generated files, retaining user settings and persistent memory."""
     from assistant.markers import load_markers, save_markers
 
     now = datetime.now(timezone.utc)
     repo = Path(repo).expanduser().resolve()
-    p = load_profile(profile, state_root)
+    live_config = repo / "config.json"
+    live_state = _dwt_state_dir(live_config, repo / ".env")
+    p = load_profile(profile, state_root if state_root is not None else live_state)
     if p.name == "dev" and not _valid_email(dev_recipient):
         raise ValueError("Il profilo dev richiede --dev-recipient con un indirizzo email valido.")
     key = os.environ.get("AZURE_API_KEY", "")
@@ -224,11 +228,22 @@ def install(
             raise FileNotFoundError("Provider non trovato: passa --provider-json <file>.")
         provider = _provider(_jsonc(config.read_text(encoding="utf-8")), p.settings.model)
 
-    live_config = repo / "config.json"
     if not live_config.is_file():
         raise FileNotFoundError("config.json non trovato nel repository.")
     config = _read_object(live_config)
-    live_db = _dwt_state_dir(live_config) / "dwt.db"
+    if p.name == "dev":
+        recap_recipient = dev_recipient
+    else:
+        from assistant.recap import recap_recipient as resolve_recipient
+
+        candidate = replace(p, settings=replace(
+            p.settings, dwt_config=live_config, recap_recipient=recap_recipient,
+        ))
+        try:
+            recap_recipient = resolve_recipient(candidate)
+        except ValueError:
+            raise ValueError("Passa --recap-recipient con un indirizzo presente in digest_recipients.") from None
+    live_db = live_state / "dwt.db"
     dev_dir = p.root / "dwt"
     if p.name == "dev":
         if not live_db.is_file():
@@ -244,8 +259,11 @@ def install(
         p.settings, opencode_bin=str(Path(opencode).absolute()), dwt_bin=str(dwt),
         dwt_config=dev_dir / "config.json" if p.name == "dev" else live_config,
         dwt_env=repo / ".env", secrets_env=p.root / "secrets.env", provider=provider,
+        recap_recipient=recap_recipient,
+        dwt_state_dir=str(dev_dir if p.name == "dev" else live_state),
     )
     p = replace(p, settings=settings)
+    warn_opencode_version(settings.opencode_bin)
     subprocess.run([uv, "venv", "--python", "3.13", str(p.root / "venv")], check=True)
     subprocess.run([
         uv, "pip", "install", "--python", str(p.root / "venv/bin/python"), str(repo / "assistant"),

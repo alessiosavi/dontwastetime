@@ -17,9 +17,10 @@ from urllib.parse import quote
 from urllib.request import ProxyHandler, Request, build_opener
 
 from assistant.install import _atomic_write
-from assistant.opencode_env import opencode_env
-from assistant.profile import load_profile
+from assistant.opencode_env import opencode_env, warn_opencode_version
+from assistant.profile import _read_object, load_profile
 from assistant.render import render_workspace
+from assistant.snapshot import ui_active
 
 
 class _Stopped(Exception):
@@ -116,12 +117,29 @@ def _terminate_group(process: subprocess.Popen) -> None:
 def launch(
     profile: str, *, state_root: Path | None = None, tui: bool = False, timeout: float = 20,
 ) -> int:
-    """Re-render on every launch, pair in memory, then supervise until closed."""
+    """Reopen an active UI, or render and supervise a new private process."""
     p = load_profile(profile, state_root)
+    warn_opencode_version(p.settings.opencode_bin)
+    ui_file = p.root / "ui.json"
+    if ui_active(p):
+        info = _read_object(ui_file)
+        port = info.get("port")
+        if (info.get("pid") != int((p.root / "ui.pid").read_text(encoding="utf-8"))
+                or type(port) is not int or not 1 <= port <= 65535):
+            raise RuntimeError("L'assistente è già attivo; la porta del browser non è disponibile.")
+        result = subprocess.run(
+            ["open", f"http://127.0.0.1:{port}/"], stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        if result.returncode:
+            raise RuntimeError("Impossibile aprire il browser.")
+        print("L'assistente è già aperto nel browser.", flush=True)
+        return 0
     render_workspace(p, p.root / "harness-live")
     _snapshot_if_available(p)
     env = opencode_env(p, "ui", workspace=p.workspace)
     command = [p.settings.opencode_bin]
+    port = None
     if not tui:
         port = _free_port()
         password = secrets.token_urlsafe(32)
@@ -140,6 +158,7 @@ def launch(
             stderr=None if tui else subprocess.DEVNULL,
         )
         _atomic_write(pid_file, f"{process.pid}\n")
+        _atomic_write(ui_file, json.dumps({"pid": process.pid, "port": port}) + "\n")
         if not tui:
             url = _pair(process, port, password, timeout)
             result = subprocess.run(
@@ -168,6 +187,7 @@ def launch(
                     try:
                         if pid_file.read_text(encoding="utf-8").strip() == str(process.pid):
                             pid_file.unlink()
+                            ui_file.unlink(missing_ok=True)
                     except FileNotFoundError:
                         pass
         finally:

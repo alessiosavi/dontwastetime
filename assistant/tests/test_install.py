@@ -306,6 +306,78 @@ def test_operator_uses_live_config_and_no_launchd(installation):
     assert not (Path.home() / "Library/LaunchAgents").exists()
 
 
+@pytest.mark.parametrize("profile_name", ["dev", "operator"])
+def test_install_stores_recap_recipient(installation, profile_name):
+    p = do_install(installation, profile_name, no_launchd=True)
+    expected = "dev@example.com" if profile_name == "dev" else "operator@example.com"
+    assert p.settings.recap_recipient == expected
+    assert load_profile(profile_name, installation["state_root"]).settings.recap_recipient == expected
+
+
+@pytest.mark.parametrize("source", ["process", "env_file", "config", "default"])
+@pytest.mark.parametrize("profile_name", ["dev", "operator"])
+def test_install_resolves_and_stores_dwt_state(installation, monkeypatch, source, profile_name):
+    repo = installation["repo"]
+    live = (Path.home() / "Library/Application Support/dontwastetime" if source == "default"
+            else installation["state_root"] / f"live-{source}")
+    live.mkdir(parents=True)
+    with sqlite3.connect(live / "dwt.db") as db:
+        db.execute("create table source_marker (value text)")
+        db.execute("insert into source_marker values (?)", (source,))
+    config = installation["config"]
+    if source == "default":
+        config.pop("state_dir")
+    else:
+        config["state_dir"] = str(live if source == "config" else repo / "wrong-config-state")
+    (repo / "config.json").write_text(json.dumps(config))
+    if source in ("process", "env_file"):
+        (repo / ".env").write_text(f'DWT_STATE_DIR="{live if source == "env_file" else repo / "wrong-env-state"}"\n')
+    if source == "process":
+        monkeypatch.setenv("DWT_STATE_DIR", str(live))
+    p = do_install(installation, profile_name, no_launchd=True)
+    expected = p.root / "dwt" if profile_name == "dev" else live
+    assert p.settings.dwt_state_dir == str(expected)
+    monkeypatch.setenv("DWT_STATE_DIR", str(repo / "changed-environment"))
+    assert load_profile(profile_name, installation["state_root"]).dwt_state_dir == expected
+    if profile_name == "dev":
+        with sqlite3.connect(p.dwt_state_dir / "dwt.db") as db:
+            assert db.execute("select value from source_marker").fetchall() == [(source,)]
+
+
+def test_install_without_state_root_locates_profiles_in_live_state(installation):
+    p = do_install(installation, "operator", state_root=None, no_launchd=True)
+    assert p.root == installation["live"] / "assistant/operator"
+
+
+@pytest.mark.parametrize("version, warns", [("2.2.7", False), ("2.2.5", True), ("2.2.70", True)])
+def test_install_version_warning_is_nonfatal_on_stderr(installation, version, warns, capsys):
+    tool = Path(os.environ["PATH"]) / "opencode"
+    tool.write_text(f"#!{sys.executable}\nprint({version!r})\n")
+    p = do_install(installation, no_launchd=True)
+    assert (p.root / "settings.json").is_file()
+    captured = capsys.readouterr()
+    assert ("2.2.7" in captured.err and "avviso" in captured.err.lower()) == warns
+    assert "avviso" not in captured.out.lower()
+
+
+def test_operator_install_accepts_explicit_digest_recipient_case_insensitively(installation):
+    config = {**installation["config"], "digest_recipients": ["operator@example.com", "other@example.com"]}
+    (installation["repo"] / "config.json").write_text(json.dumps(config))
+    p = do_install(installation, "operator", recap_recipient="person.two@example.com", no_launchd=True)
+    assert p.settings.recap_recipient == "person.two@example.com"
+
+
+@pytest.mark.parametrize("recipients, chosen", [
+    ([], None), (["a@example.com", "b@example.com"], None),
+    (["operator@example.com"], "other@example.com"), ([""], None),
+])
+def test_operator_install_rejects_missing_or_unauthorized_recipient(installation, recipients, chosen):
+    (installation["repo"] / "config.json").write_text(json.dumps({"digest_recipients": recipients}))
+    with pytest.raises(ValueError, match="--recap-recipient"):
+        do_install(installation, "operator", recap_recipient=chosen)
+    assert not installation["records"].exists()
+
+
 @pytest.mark.parametrize("missing", ["key", "dwt", "opencode"])
 def test_install_prerequisites_fail_before_tools(installation, monkeypatch, missing):
     if missing == "key":

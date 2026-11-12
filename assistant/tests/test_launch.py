@@ -44,12 +44,13 @@ def ui(tmp_path, fake_tools):
     return p, record, opened
 
 
-def fake_server(ui, mode="normal"):
+def fake_server(ui, mode="normal", version="2.2.7"):
     p, record, _ = ui
     Path(p.settings.opencode_bin).write_text(
         f"#!{sys.executable}\n" + '''
 import base64, http.server, json, os, pathlib, signal, sys, time
-''' + f"record = pathlib.Path({str(record)!r})\nmode = {mode!r}\n" + '''
+''' + f"if sys.argv[1:] == ['--version']: print({version!r}); sys.exit(0)\n" +
+        f"record = pathlib.Path({str(record)!r})\nmode = {mode!r}\n" + '''
 def save(data):
     with record.open('a') as f: f.write(json.dumps(data) + '\\n')
 save({'argv': sys.argv[1:], 'cwd': os.getcwd(), 'pid': os.getpid(),
@@ -125,6 +126,8 @@ def test_launch_pairs_and_writes_pid(ui, stop_signal):
         events = [json.loads(line) for line in record.read_text().splitlines()]
         serve_pid = events[0]["pid"]
         assert int((p.root / "ui.pid").read_text()) == serve_pid
+        port = int(events[0]["argv"][events[0]["argv"].index("--port") + 1])
+        assert json.loads((p.root / "ui.json").read_text()) == {"pid": serve_pid, "port": port}
         assert events[0]["argv"][:3] == ["serve", "--hostname", "127.0.0.1"]
         assert "--standalone" not in events[0]["argv"]
         assert events[0]["cwd"] == str(p.workspace)
@@ -143,10 +146,58 @@ def test_launch_pairs_and_writes_pid(ui, stop_signal):
         assert "Assistente aperto nel browser. Lascia aperta questa finestra; chiudila per spegnere l'assistente." in stdout
         assert PASSWORD not in stdout + stderr and PAIR_CODE not in stdout + stderr
         assert not (p.root / "ui.pid").exists()
+        assert not (p.root / "ui.json").exists()
         with pytest.raises(ProcessLookupError):
             os.kill(serve_pid, 0)
         for log in p.logs_dir.glob("*"):
             assert PASSWORD not in log.read_text() and PAIR_CODE not in log.read_text()
+    finally:
+        if child.poll() is None:
+            child.terminate()
+            child.communicate(timeout=8)
+
+
+def test_second_launch_reopens_running_ui_without_rendering(ui):
+    p, record, opened = ui
+    fake_server(ui)
+    child = start_launcher(p)
+    try:
+        wait_for(opened.exists, child)
+        read_ready(child)
+        sentinel = p.workspace / "running-server-file"
+        sentinel.write_text("keep workspace inode")
+        inode = p.workspace.stat().st_ino
+        events = record.read_bytes()
+        first_url, = json.loads(opened.read_text())
+        # Invalid harness ensures a second render would fail even before publication.
+        (p.root / "harness-live/systemprompt.md").unlink()
+        second = start_launcher(p)
+        stdout, stderr = second.communicate(timeout=8)
+        assert second.returncode == 0, stderr
+        assert "L'assistente è già aperto nel browser." in stdout
+        assert json.loads(opened.read_text()) == [first_url.split("/auth/")[0] + "/"]
+        assert record.read_bytes() == events  # No additional server or pairing.
+        assert p.workspace.stat().st_ino == inode
+        assert sentinel.read_text() == "keep workspace inode"
+        assert child.poll() is None
+    finally:
+        child.terminate()
+        child.communicate(timeout=8)
+
+
+@pytest.mark.parametrize("version, warns", [("2.2.7", False), ("2.2.5", True), ("2.2.70", True)])
+def test_launch_version_warning_is_nonfatal_on_stderr(ui, version, warns):
+    p, _, opened = ui
+    fake_server(ui, version=version)
+    child = start_launcher(p)
+    try:
+        wait_for(opened.exists, child)
+        ready = read_ready(child)
+        child.terminate()
+        stdout, stderr = child.communicate(timeout=8)
+        assert "Assistente aperto nel browser." in ready + stdout
+        assert ("2.2.7" in stderr and "avviso" in stderr.lower()) == warns
+        assert "avviso" not in stdout.lower()
     finally:
         if child.poll() is None:
             child.terminate()

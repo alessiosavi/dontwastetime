@@ -4,6 +4,7 @@ from collections.abc import Mapping, Sequence
 import os
 from pathlib import Path
 import subprocess
+import sys
 from typing import Literal
 
 from assistant.profile import Profile
@@ -11,6 +12,22 @@ from assistant.profile import Profile
 
 Purpose = Literal["ui", "ops"]
 _PARENT_KEYS = ("PATH", "LANG", "LC_ALL", "SSL_CERT_FILE", "SSL_CERT_DIR")
+
+
+def warn_opencode_version(binary: str) -> None:
+    """Version drift is visible to the operator but does not prevent startup."""
+    try:
+        result = subprocess.run(
+            [binary, "--version"], timeout=10, stdin=subprocess.DEVNULL,
+            capture_output=True, text=True,
+        )
+        supported = result.returncode == 0 and result.stdout.strip() == "2.2.7"
+    except (OSError, subprocess.SubprocessError):
+        supported = False
+    if not supported:
+        # Do not echo arbitrary child output (which may contain private values).
+        print("Assistente: avviso: il runtime richiede il comportamento di OpenCode 2.2.7; "
+              "la versione installata è diversa o non verificabile.", file=sys.stderr)
 
 
 def _azure_key(path: Path) -> str:

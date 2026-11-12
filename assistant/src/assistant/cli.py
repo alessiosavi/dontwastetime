@@ -30,6 +30,7 @@ def main(argv=None) -> int:
     installing = commands.add_parser("install", help="installa un profilo")
     installing.add_argument("--repo", type=Path, required=True)
     installing.add_argument("--dev-recipient")
+    installing.add_argument("--recap-recipient")
     installing.add_argument("--provider-json", type=Path)
     installing.add_argument("--desktop-launcher", action="store_true")
     installing.add_argument("--no-launchd", action="store_true")
@@ -58,6 +59,7 @@ def main(argv=None) -> int:
                 args.profile, repo=args.repo, state_root=args.state_root,
                 dev_recipient=args.dev_recipient, desktop_launcher=args.desktop_launcher,
                 provider_json=args.provider_json, no_launchd=args.no_launchd,
+                recap_recipient=args.recap_recipient,
             )
         elif args.command == "uninstall":
             uninstall(args.profile, state_root=args.state_root, purge=args.purge)
@@ -94,7 +96,7 @@ def main(argv=None) -> int:
             from assistant.sessions import export_new_sessions
             from assistant.recap import (
                 DwtClient, ROME, build_recap, deliver_recap, recap_period_start, reconcile_claim,
-                summarize_with_agent, write_recap,
+                recap_recipient, summarize_with_agent, write_recap,
             )
 
             p = load_profile(args.profile, args.state_root)
@@ -107,6 +109,7 @@ def main(argv=None) -> int:
                 if load_markers(p).recap_claim == f"recap:{now.astimezone(ROME).date().isoformat()}":
                     print("Recap già preso in carico oggi.")
                     return 0
+                recap_recipient(p)
                 export_new_sessions(p)
                 with DwtClient(p, now=now) as client:
                     recap = build_recap(p, recap_period_start(p, now), now, client=client,
