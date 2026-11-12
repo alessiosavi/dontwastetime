@@ -15,12 +15,59 @@ from assistant.profile import load_profile
 def _common(parser: argparse.ArgumentParser, *, suppress_defaults: bool = False) -> None:
     parser.add_argument(
         "--profile", choices=("operator", "dev"),
-        default=argparse.SUPPRESS if suppress_defaults else "operator",
+        default=argparse.SUPPRESS if suppress_defaults else None,
     )
     parser.add_argument(
         "--state-root", type=Path, help="directory di stato dwt che contiene assistant/<profilo>",
         default=argparse.SUPPRESS if suppress_defaults else None,
     )
+
+
+def _positive_jobs(value: str) -> int:
+    try:
+        jobs = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("jobs deve essere un intero positivo") from None
+    if jobs < 1:
+        raise argparse.ArgumentTypeError("jobs deve essere un intero positivo")
+    return jobs
+
+
+def _bench_seed(args) -> int:
+    from assistant.bench.gate import EvaluationIncomplete, evaluate, seed_bar
+    from assistant.bench.report import write_report
+    from assistant.bench.seed import build_seed_turns, ensure_seed_snapshot, load_seed_turns
+    from assistant.snapshot import _snapshots, take_snapshot
+    from assistant.spend import spend_between
+
+    p = load_profile(args.profile, args.state_root)
+    started = datetime.now(timezone.utc)
+    run_dir = p.bench_dir / "seed-runs" / started.strftime("%Y%m%dT%H%M%S%fZ")
+    run_dir.mkdir(mode=0o700, parents=True)
+    snapshot = ensure_seed_snapshot(p)
+    if not _snapshots(p):
+        # Refresh next-turn evidence after retention without replacing seed.db.
+        take_snapshot(p, datetime.now(timezone.utc))
+    templates = [seed for seed in load_seed_turns() if args.split == "all" or seed.split == args.split]
+    turns = [turn for turn in build_seed_turns(p, snapshot)
+             if args.split == "all" or turn.seed.split == args.split]
+    resolved = {turn.turn_id for turn in turns}
+    skipped = [seed.id for seed in templates if seed.id not in resolved]
+    scores, incomplete = [], False
+    try:
+        scores = evaluate(p, p.root / "harness-live", turns, run_dir,
+                          seeds={turn.turn_id: turn.seed for turn in turns},
+                          seed_snapshot=snapshot, jobs=args.jobs)
+    except EvaluationIncomplete:
+        incomplete = True
+    passed = not incomplete and seed_bar(scores)
+    cost = spend_between(p, started, datetime.now(timezone.utc))
+    report = write_report(run_dir, scores=scores, passed=passed, incomplete=incomplete,
+                          splits={seed.id: seed.split for seed in templates}, skipped=skipped, cost=cost)
+    for score in scores:
+        print(f"{score.turn_id}: {score.mean:.2f}; fallimenti: {', '.join(score.deterministic) or 'nessuno'}")
+    print(f"{'PASS' if passed else 'FAIL'} {report}")
+    return 0 if passed else 1
 
 
 def main(argv=None) -> int:
@@ -50,6 +97,10 @@ def main(argv=None) -> int:
     tone_card = commands.add_parser("tone-card", help="prepara una bozza della scheda di tono (solo dev)")
     bench = commands.add_parser("bench", help="valuta l'assistente sulla copia della posta")
     bench_commands = bench.add_subparsers(dest="bench_command")
+    seeding = bench_commands.add_parser("seed", help="valuta il live sul set iniziale")
+    _common(seeding, suppress_defaults=True)
+    seeding.add_argument("--split", choices=("all", "train", "holdout"), default="all")
+    seeding.add_argument("--jobs", type=_positive_jobs, default=4)
     improving = bench_commands.add_parser("improve-worker", help="avvia il processo privato di miglioramento")
     _common(improving, suppress_defaults=True)
     for subcommand in (
@@ -57,8 +108,12 @@ def main(argv=None) -> int:
     ):
         _common(subcommand, suppress_defaults=True)
     args = parser.parse_args(argv)
+    if args.profile is None:
+        args.profile = "dev" if args.command == "bench" and args.bench_command == "seed" else "operator"
     try:
         if args.command == "bench":
+            if args.bench_command == "seed":
+                return _bench_seed(args)
             if args.bench_command == "improve-worker":
                 from assistant.bench.worker import improve_worker_main
 

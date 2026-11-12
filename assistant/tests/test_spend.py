@@ -33,6 +33,21 @@ def test_record_usage_idempotent(profile):
     assert spend_between(profile, NOW, NOW).usd == 0
 
 
+def test_concurrent_record_usage_is_safe(profile):
+    from assistant.spend import record_usage, spend_between
+
+    def record(index):
+        record_usage(profile, f"call-{index % 24}", NOW, profile.settings.model,
+                     10_000, 20_000, 0.5, tokens_cache_read=30_000)
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(record, range(96)))
+    rows = [json.loads(line) for line in (profile.root / "usage.jsonl").read_text().splitlines()]
+    assert len(rows) == len({row["call_id"] for row in rows}) == 24
+    assert all(row["tokens_in"] == 10_000 and row["tokens_cache_read"] == 30_000 for row in rows)
+    assert spend_between(profile, NOW, NOW.replace(hour=11)).usd == 12
+
+
 def test_usage_price_fallback(profile):
     from assistant.spend import record_usage, spend_between
 

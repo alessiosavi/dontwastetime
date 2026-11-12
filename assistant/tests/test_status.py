@@ -1,6 +1,8 @@
 """Status stays pending until acknowledged and always respects the prompt cap."""
 
 from datetime import datetime, timedelta, timezone
+from concurrent.futures import ThreadPoolExecutor
+import time
 
 import pytest
 
@@ -36,3 +38,24 @@ def test_status_survives_reload_and_caps_one_long_event(profile):
     assert len((profile.memory_dir / "status.md").read_text()) <= 1000
     with pytest.raises(ValueError):
         record_status(profile, "x", "Data senza fuso", now.replace(tzinfo=None))
+
+
+def test_concurrent_status_writes_are_safe(profile, monkeypatch):
+    from assistant import status
+
+    original = status._save
+
+    def slow_save(p, events):
+        time.sleep(0.005)  # Widen the read/modify/write race deterministically.
+        original(p, events)
+
+    monkeypatch.setattr(status, "_save", slow_save)
+    now = datetime(2026, 11, 12, 10, tzinfo=timezone.utc)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(lambda i: status.record_status(profile, f"k{i % 24}", f"Evento {i % 24}", now), range(48)))
+    assert {event.key for event in status.pending_status(profile)} == {f"k{i}" for i in range(24)}
+    assert len(status.pending_status(profile)) == 24
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        list(pool.map(lambda i: status.ack_status(profile, [f"k{i}"]), range(24)))
+    assert status.pending_status(profile) == []
+    assert (profile.memory_dir / "status.md").read_text() == ""

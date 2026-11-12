@@ -18,8 +18,10 @@ The same metadata is persisted beside each turn in bench/seed/turns.jsonl.
 from contextlib import ExitStack, closing
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
+import fcntl
 import json
 import logging
+import os
 from pathlib import Path
 import re
 import sqlite3
@@ -30,6 +32,7 @@ from assistant.dwt_client import DwtClient
 from assistant.notes_mcp import _atomic_write, _require_aware
 from assistant.profile import Profile
 from assistant.sessions import Turn
+from assistant.snapshot import _snapshots, take_snapshot
 
 
 DATA_DIR = Path(__file__).resolve().parents[3] / "bench_data"
@@ -120,6 +123,11 @@ class _Resolver:
 
 
 def _snapshot_time(snapshot: Path) -> datetime:
+    if snapshot.name == "seed.db" and snapshot.with_suffix(".json").is_file():
+        # A SQLite backup has a fresh birthtime, even if its mtime is preserved.
+        at = datetime.fromisoformat(json.loads(snapshot.with_suffix(".json").read_text(encoding="utf-8"))["at"])
+        _require_aware(at)
+        return at
     try:
         return datetime.strptime(snapshot.name, "dwt-%Y%m%dT%H%M%SZ.db").replace(tzinfo=timezone.utc)
     except ValueError:
@@ -133,6 +141,37 @@ def _copy_snapshot(source: Path, dest: Path) -> None:
     with closing(sqlite3.connect(source.resolve().as_uri() + "?mode=ro", uri=True)) as src:
         with closing(sqlite3.connect(dest)) as dst:
             src.backup(dst)
+
+
+def ensure_seed_snapshot(p: Profile) -> Path:
+    """Freeze the newest snapshot once, using SQLite backup and atomic publish.
+
+    This database lives outside snapshots/, so retention never removes it.
+    A stable lock also prevents simultaneous seed commands from replacing it.
+    """
+    directory = p.bench_dir / "seed"
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    target = directory / "seed.db"
+    with (directory / "seed.lock").open("a", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        if target.is_file():
+            return target
+        snapshots = _snapshots(p)
+        source = snapshots[-1][1] if snapshots else take_snapshot(p, datetime.now(timezone.utc))
+        fd, name = tempfile.mkstemp(prefix=".seed-", suffix=".db", dir=directory)
+        os.close(fd)
+        temporary = Path(name)
+        try:
+            _copy_snapshot(source, temporary)
+            with temporary.open("rb") as output:
+                os.fsync(output.fileno())
+            # Publish the captured clock before the DB commit marker, under the
+            # same lock. Replays keep that clock even after snapshots are pruned.
+            _atomic_write(target.with_suffix(".json"), json.dumps({"at": _snapshot_time(source).isoformat()}) + "\n")
+            os.replace(temporary, target)
+        finally:
+            temporary.unlink(missing_ok=True)
+    return target
 
 
 def build_seed_turns(p: Profile, snapshot: Path) -> list[Turn]:

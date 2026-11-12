@@ -160,7 +160,9 @@ def judge_turn(
                 stdout = error.stdout or ""
             logger.warning("Giudizio %s, tentativo %s fallito (%s).", turn.turn_id, attempt, type(error).__name__)
         text, _, usage, event_failure = run_events(stdout)
-        record_usage(p, f"judge:{rollout.run_dir.parent.name}:{turn.turn_id}:{attempt}",
+        # A resumed evaluation reuses rollouts but makes a new paid judgment.
+        # The fresh workspace identifies this invocation, including its retries.
+        record_usage(p, f"judge:{rollout.run_dir.parent.name}:{turn.turn_id}:{workspace.name}:{attempt}",
                      at, p.settings.model, **usage)
         parsed = _scores(text) if not (failed or event_failure) else None
         if parsed is not None:

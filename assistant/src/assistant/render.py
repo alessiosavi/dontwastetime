@@ -231,8 +231,11 @@ def ops_workspace(p: Profile, *, dwt_read_tools: bool) -> Path:
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     cutoff = time.time() - 86_400
     for old in root.iterdir():
-        if not old.is_symlink() and old.is_dir() and old.stat().st_mtime < cutoff:
-            shutil.rmtree(old)
+        try:
+            if not old.is_symlink() and old.is_dir() and old.stat().st_mtime < cutoff:
+                shutil.rmtree(old)
+        except FileNotFoundError:
+            pass  # Another parallel judge already removed this stale workspace.
     workspace = Path(tempfile.mkdtemp(prefix="ops-", dir=root))
     try:
         (workspace / "opencode.json").write_text(config_text, encoding="utf-8")

@@ -38,8 +38,21 @@ def test_judge_parses_scores(profile, bench_turn, tmp_path, event_runner):
     assert "Buongiorno" in prompt and "cosa devo fare oggi?" in prompt
     assert "mail" in prompt and "Appendice A" in prompt
     usage = json.loads((profile.root / "usage.jsonl").read_text())
-    assert usage["call_id"] == "judge:run:session:0:1"
+    assert usage["call_id"].startswith("judge:run:session:0:ops-")
+    assert usage["call_id"].endswith(":1")
     assert (usage["tokens_in"], usage["tokens_out"]) == (10, 5)
+
+
+def test_repeated_judging_records_every_paid_call(profile, bench_turn, tmp_path, event_runner):
+    from assistant.bench.judge import RUBRIC_DIMENSIONS, judge_turn
+
+    event_runner(events(json.dumps(dict.fromkeys(RUBRIC_DIMENSIONS, 8) | {"reasons": "bene"})))
+    rollout = RolloutTurn(bench_turn.turn_id, "Ecco le priorità.", [], tmp_path / "run/session_0")
+    assert judge_turn(profile, bench_turn, rollout, "") is not None
+    assert judge_turn(profile, bench_turn, rollout, "") is not None
+    usage = [json.loads(line) for line in (profile.root / "usage.jsonl").read_text().splitlines()]
+    assert len(usage) == len({row["call_id"] for row in usage}) == 2
+    assert sum(row["tokens_in"] + row["tokens_out"] for row in usage) == 30
 
 
 @pytest.mark.parametrize("invalid", ['nessun JSON', '{"fatti":8}',
@@ -58,7 +71,8 @@ def test_judge_none_on_bad_json_after_two_attempts(profile, bench_turn, tmp_path
     assert len(calls) == 2
     assert calls[0]["argv"][-1] != calls[1]["argv"][-1]
     usage = [json.loads(line) for line in (profile.root / "usage.jsonl").read_text().splitlines()]
-    assert [r["call_id"] for r in usage] == ["judge:run:session:0:1", "judge:run:session:0:2"]
+    assert [row["call_id"].rsplit(":", 1)[1] for row in usage] == ["1", "2"]
+    assert len({row["call_id"].rsplit(":", 1)[0] for row in usage}) == 1
 
 
 def test_judge_rejects_invalid_last_object_even_after_valid_object(profile, bench_turn, tmp_path, event_runner):
