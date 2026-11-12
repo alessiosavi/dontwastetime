@@ -167,6 +167,19 @@ def test_config_rejects_naive_now(profile):
         opencode_config(profile, profile.workspace, now=datetime(2026, 11, 12, 9))
 
 
+def test_rerender_with_disposable_notes_keeps_the_disposable_link(profile, tmp_path):
+    from assistant.render import render_workspace
+
+    notes = tmp_path / "disposable-notes"
+    workspace = tmp_path / "replay"
+    render_workspace(profile, HARNESS_ROOT, workspace, notes_dir=notes)
+    (notes / "notes.md").write_text("replay note")
+    render_workspace(profile, HARNESS_ROOT, workspace, notes_dir=notes)
+    assert (workspace / "memory").resolve() == notes
+    assert (workspace / "memory/notes.md").read_text() == "replay note"
+    assert not profile.memory_dir.exists()
+
+
 def test_rerender_keeps_memory(profile):
     from assistant.render import render_workspace
 

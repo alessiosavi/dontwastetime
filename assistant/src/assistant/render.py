@@ -64,6 +64,10 @@ def dwt_command(p: Profile, state_dir: Path | None = None, now: datetime | None 
     return command
 
 
+def _dwt_server(p: Profile, state_dir: Path | None, now: datetime | None) -> dict:
+    return _local_server(dwt_command(p, state_dir, now))
+
+
 def opencode_config(
     p: Profile,
     workspace: Path,
@@ -71,13 +75,15 @@ def opencode_config(
     dwt_state_dir: Path | None = None,
     now: datetime | None = None,
     notes_dir: Path | None = None,
+    dwt_command: list[str] | None = None,
 ) -> dict:
     """Build A4's live policy; no credentials or developer config are read."""
     memory = (p.memory_dir if notes_dir is None else notes_dir).resolve()
     return {
         **_base_config(p),
         "mcp": {"servers": {
-            "dwt": _local_server(dwt_command(p, dwt_state_dir, now)),
+            "dwt": (_dwt_server(p, dwt_state_dir, now) if dwt_command is None
+                    else _local_server(list(dwt_command))),
             "notes": _local_server([
                 sys.executable, "-m", "assistant", "notes-mcp", "--memory-dir", str(memory),
             ]),
@@ -116,7 +122,7 @@ def _check_budget(rendered: Path, config: dict) -> None:
         raise ValueError(f"always-on content is {total} chars, over the 24000 cap")
 
 
-def _check_destination(dest: Path, memory: Path) -> None:
+def _check_destination(dest: Path, memory: Path, *, link_memory: Path | None = None) -> None:
     if dest.is_symlink() or (dest.exists() and not dest.is_dir()):
         raise ValueError("workspace destination must be a directory, not a symlink or file")
     resolved = dest.resolve()
@@ -124,13 +130,13 @@ def _check_destination(dest: Path, memory: Path) -> None:
         raise ValueError("workspace destination must not overlap the memory directory")
     link = dest / "memory"
     if link.is_symlink():
-        if link.resolve() != memory:
-            raise ValueError("workspace memory symlink must point to the profile memory directory")
+        if link.resolve() != (memory if link_memory is None else link_memory):
+            raise ValueError("workspace memory symlink must point to the configured memory directory")
     elif link.exists():
         raise ValueError("workspace memory must be a symlink to the profile memory directory")
 
 
-def _publish_workspace(p: Profile, dest: Path, rendered: Path, config: dict) -> None:
+def _publish_workspace(dest: Path, rendered: Path, config: dict) -> None:
     """Prepare copies beside dest, then replace it with rollback on rename failure."""
     config_text = json.dumps(config, ensure_ascii=False, indent=2) + "\n"
     dest.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -142,8 +148,9 @@ def _publish_workspace(p: Profile, dest: Path, rendered: Path, config: dict) -> 
         shutil.copy2(rendered / "AGENTS.md", ready / "AGENTS.md")
         shutil.copytree(rendered / ".opencode/skills", ready / ".opencode/skills")
         (ready / "opencode.json").write_text(config_text, encoding="utf-8")
-        (ready / "memory").symlink_to(p.memory_dir.resolve(), target_is_directory=True)
-        p.memory_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+        memory = Path(config["instructions"][0]).parent
+        (ready / "memory").symlink_to(memory, target_is_directory=True)
+        memory.mkdir(mode=0o700, parents=True, exist_ok=True)
         for path in config["instructions"]:
             file = Path(path)
             file.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -177,7 +184,8 @@ def _publish_workspace(p: Profile, dest: Path, rendered: Path, config: dict) -> 
 
 
 def render_workspace(
-    p: Profile, tree_dir: Path, dest: Path | None = None, **cfg_overrides,
+    p: Profile, tree_dir: Path, dest: Path | None = None, *,
+    dwt_command: list[str] | None = None, **cfg_overrides,
 ) -> Path:
     """Validate before touching dest; render only into disposable directories.
 
@@ -187,11 +195,11 @@ def render_workspace(
     tree_dir = tree_dir.resolve()
     validate_tree(load_tree(tree_dir))
     dest = (p.workspace if dest is None else dest).absolute()
-    _check_destination(dest, p.memory_dir.resolve())
-    config = opencode_config(p, dest, **cfg_overrides)
+    config = opencode_config(p, dest, dwt_command=dwt_command, **cfg_overrides)
     for path in config["instructions"]:
         if Path(path).resolve().is_relative_to(dest.resolve()):
             raise ValueError("instruction files must not overlap the replaced workspace")
+    _check_destination(dest, p.memory_dir.resolve(), link_memory=Path(config["instructions"][0]).parent)
     h2 = harness2()
     ctx: dict[str, str] = {}
     install = h2.OpencodeSubstrate().materialise(
@@ -205,7 +213,7 @@ def render_workspace(
             h2.render_opencode_tree(install.staging_dir, rendered, ctx)
             _check_rendered(rendered)
             _check_budget(rendered, config)
-            _publish_workspace(p, dest, rendered, config)
+            _publish_workspace(dest, rendered, config)
     finally:
         shutil.rmtree(install.staging_dir)
     return dest
