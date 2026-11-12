@@ -17,8 +17,10 @@ from assistant.snapshot import _snapshots, snapshot_before
 
 
 class OperatorAdapter:
-    def __init__(self, p: Profile, batch: list[Turn], seeds: dict[str, SeedTurn], *, batch_id: str):
+    def __init__(self, p: Profile, batch: list[Turn], seeds: dict[str, SeedTurn], *, batch_id: str,
+                 seed_snapshot: Path | None = None):
         self.p, self.batch, self.seeds, self.batch_id = p, list(batch), dict(seeds), batch_id
+        self.seed_snapshot = seed_snapshot
         names = [rollout._turn_name(turn.turn_id) for turn in batch]
         if len(set(names)) != len(names):
             raise ValueError("Identificativi dei turni in conflitto dopo la normalizzazione.")
@@ -82,7 +84,9 @@ class OperatorAdapter:
         if directory == root or not directory.is_relative_to(root):
             raise ValueError("La directory del run deve restare dentro Harness² runs.")
         seed_turns = [turn for turn in self.batch if turn.turn_id in self.seeds or getattr(turn, "seed", None)]
-        seed_snapshot = snapshot_before(self.p, min(turn.at for turn in seed_turns)) if seed_turns else None
+        seed_snapshot = None
+        if seed_turns:
+            seed_snapshot = self.seed_snapshot or snapshot_before(self.p, min(turn.at for turn in seed_turns))
         rollout.execute_turns(self.p, harness_dir if harness_dir is not None else self.base_harness(),
                               self.batch, directory, seeds=self.seeds, seed_snapshot=seed_snapshot)
         return directory

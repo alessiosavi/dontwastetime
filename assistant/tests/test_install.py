@@ -446,3 +446,26 @@ def test_launcher_quotes_shell_metacharacters(tmp_path):
 
     p = load_profile("operator", state_root=tmp_path / "state '$`with\" chars")
     assert shlex.split(launcher_script(p).splitlines()[-1])[-1] == str(p.root.parent.parent)
+
+
+def test_promoted_status_recorded_on_install(installation):
+    from assistant.bench.improve import fingerprint
+    from assistant.status import ack_status, pending_status
+
+    p = do_install(installation, no_launchd=True)
+    old = fingerprint(p.root / "harness-live")
+    candidate = p.bench_dir / "runs/promoted-run/candidate"
+    shutil.copytree(installation["repo"] / "assistant/harness", candidate)
+    path = candidate / "systemprompt.md"
+    path.write_text(path.read_text() + "\nRisposte più brevi nelle bozze.\n")
+    (candidate.parent / "GATE").write_text("passed\n")
+    (candidate.parent / "report.md").write_text("## Sintesi\n\nHo imparato: risposte più brevi nelle bozze\n")
+    shutil.copytree(candidate, installation["repo"] / "assistant/harness", dirs_exist_ok=True)
+    do_install(installation, no_launchd=True)
+    events = pending_status(p)
+    assert fingerprint(p.root / "harness-live") != old
+    assert [(event.key, event.text) for event in events] == [
+        ("promoted:promoted-run", "Ho imparato: risposte più brevi nelle bozze")]
+    ack_status(p, ["promoted:promoted-run"])
+    do_install(installation, no_launchd=True)
+    assert pending_status(p) == []

@@ -50,7 +50,8 @@ import fcntl, json, os, sys, types
 from pathlib import Path
 from assistant.bench import adapter, shim, worker
 assert 'harness2' not in sys.modules
-def run(p):
+def run(p, now):
+    assert now.tzinfo is not None
     from harness2 import config
     from harness2.core.proposer import _opencode_dir
     assert 'harness2.core.schedule' in sys.modules
@@ -61,12 +62,16 @@ def run(p):
     print(json.dumps({'root':str(config.ROOT), 'runs':str(config.RUNS),
           'models':[config.SOLVER_MODEL_OC, config.IMPROVER_MODEL, config.JUDGE_MODEL],
           'opencode':str(_opencode_dir())}))
+    directory = p.bench_dir/'runs/fake-run'
+    directory.mkdir(parents=True)
+    (directory/'GATE').write_text('passed')
+    return directory
 sys.modules['assistant.bench.improve'] = types.SimpleNamespace(run_improvement=run)
 raise SystemExit(worker.improve_worker_main('dev', Path(sys.argv[1])))
 """, profile.root.parent.parent)
     assert result.returncode == 0, result.stderr
     root = profile.bench_dir / "h2"
-    assert json.loads(result.stdout) == {
+    assert json.loads(result.stdout.splitlines()[0]) == {
         "root": str(root), "runs": str(root / "runs"),
         "models": [profile.settings.model] * 3, "opencode": str(root / "dependencies/opencode")}
 
@@ -85,12 +90,23 @@ assert 'harness2' not in sys.modules
     assert not (profile.bench_dir / "h2").exists()
 
 
-def test_worker_cli_skips_unavailable_improvement(profile):
-    result = subprocess.run([sys.executable, "-m", "assistant", "bench", "improve-worker",
-        "--profile", "dev", "--state-root", str(profile.root.parent.parent)],
-        capture_output=True, text=True, timeout=30)
+def test_worker_cli_runs_improvement(profile):
+    result = python("""
+import sys, types
+from pathlib import Path
+from assistant.cli import main
+def run(p, now):
+    assert now.tzinfo is not None
+    directory = p.bench_dir/'runs/fake-run'
+    directory.mkdir(parents=True)
+    (directory/'GATE').write_text('passed')
+    (directory/'report.md').write_text('report')
+    return directory
+sys.modules['assistant.bench.improve'] = types.SimpleNamespace(run_improvement=run)
+raise SystemExit(main(['bench', 'improve-worker', '--profile', 'dev', '--state-root', sys.argv[1]]))
+""", profile.root.parent.parent)
     assert result.returncode == 0, result.stderr
-    assert "run_improvement non ancora disponibile" in result.stderr
+    assert "fake-run: GATE=passed" in result.stdout and "report.md" in result.stdout
     assert (profile.bench_dir / "h2/dependencies/tools/node_modules/.bin/bun").is_file()
 
 

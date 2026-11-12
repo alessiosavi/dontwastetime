@@ -280,6 +280,9 @@ def install(
     _atomic_write(p.root / "settings.json", json.dumps(asdict(settings), default=str, indent=2) + "\n")
     _atomic_write(settings.secrets_env, f"AZURE_API_KEY={key}\n")
     harness = p.root / "harness-live"
+    from assistant.bench.improve import fingerprint, record_promoted_install
+
+    previous_harness = fingerprint(harness) if harness.is_dir() else None
     if harness.exists():
         shutil.rmtree(harness)
     shutil.copytree(repo / "assistant/harness", harness)
@@ -290,6 +293,7 @@ def install(
         _atomic_write(settings.dwt_config, json.dumps(config, indent=2) + "\n")
         _atomic_write(dev_dir / "taxonomy.json", (repo / "taxonomy.json").read_text(encoding="utf-8"))
     render_workspace(p, harness)
+    record_promoted_install(p, previous_harness, now)
     script = launcher_script(p)
     _atomic_write(p.root / "Assistente.command", script, 0o755)
     if desktop_launcher:

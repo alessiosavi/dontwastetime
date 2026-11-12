@@ -2,15 +2,12 @@
 
 import fcntl
 import importlib
-import logging
+from datetime import datetime, timezone
 import os
 from pathlib import Path
 
 from assistant.bench.shim import prepare_harness2_root
 from assistant.profile import load_profile
-
-
-logger = logging.getLogger(__name__)
 
 
 def improve_worker_main(profile: str, state_root: Path | None = None) -> int:
@@ -19,6 +16,7 @@ def improve_worker_main(profile: str, state_root: Path | None = None) -> int:
         try:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
+            print("Un miglioramento è già in corso.")
             return 0
         root = prepare_harness2_root(p)
         os.chdir(root)
@@ -29,12 +27,8 @@ def improve_worker_main(profile: str, state_root: Path | None = None) -> int:
         # config.py captures cwd, .env and model settings at first import.
         importlib.import_module("harness2.core.schedule")
         importlib.import_module("harness2.core.proposer")
-        try:
-            improve = importlib.import_module("assistant.bench.improve")
-        except ModuleNotFoundError as error:
-            if error.name != "assistant.bench.improve":
-                raise
-            logger.warning("run_improvement non ancora disponibile")
-            return 0
-        improve.run_improvement(p)
-        return 0
+        improve = importlib.import_module("assistant.bench.improve")
+        directory = improve.run_improvement(p, datetime.now(timezone.utc))
+        gate = (directory / "GATE").read_text(encoding="utf-8").strip()
+        print(f"Run {directory.name}: GATE={gate}; report: {directory / 'report.md'}")
+        return 0 if gate == "passed" else 1

@@ -103,6 +103,12 @@ def main(argv=None) -> int:
     seeding.add_argument("--jobs", type=_positive_jobs, default=4)
     improving = bench_commands.add_parser("improve-worker", help="avvia il processo privato di miglioramento")
     _common(improving, suppress_defaults=True)
+    manual_improve = bench_commands.add_parser("improve", help="esegui il miglioramento in primo piano")
+    _common(manual_improve, suppress_defaults=True)
+    promoting = bench_commands.add_parser("promote", help="copia un candidato approvato nel repository")
+    _common(promoting, suppress_defaults=True)
+    promoting.add_argument("--run", required=True)
+    promoting.add_argument("--repo", type=Path, required=True)
     for subcommand in (
         installing, removing, launching, notes, ticking, exporting, snapshotting, recapping, tone_card, bench,
     ):
@@ -118,6 +124,18 @@ def main(argv=None) -> int:
                 from assistant.bench.worker import improve_worker_main
 
                 return improve_worker_main(args.profile, args.state_root)
+            if args.bench_command == "improve":
+                command = [sys.executable, "-m", "assistant", "bench", "improve-worker",
+                           "--profile", args.profile]
+                if args.state_root is not None:
+                    command.extend(["--state-root", str(args.state_root.expanduser().resolve())])
+                return subprocess.run(command, stdin=subprocess.DEVNULL, check=False).returncode
+            if args.bench_command == "promote":
+                from assistant.bench.improve import promote
+
+                for path in promote(load_profile(args.profile, args.state_root), args.run, args.repo):
+                    print(path)
+                return 0
             bench.print_help()
             return 0
         if args.command == "install":
