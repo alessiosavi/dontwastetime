@@ -1,7 +1,9 @@
 """Installation contracts: all external tools and HOME belong to this test."""
 
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -10,7 +12,9 @@ import shlex
 import shutil
 import sqlite3
 import stat
+import subprocess
 import sys
+from threading import Event
 
 import pytest
 
@@ -49,14 +53,38 @@ def installation(tmp_path, monkeypatch, fake_tools):
     provider_file = tmp_path / "provider.json"
     provider_file.write_text(json.dumps(provider))
     records = tmp_path / "tool-calls.jsonl"
+    loaded_jobs = tmp_path / "loaded-jobs"
+    loaded_jobs.mkdir()
+    pip_failure = tmp_path / "pip-failure"
+    bootout_failure = tmp_path / "bootout-failure"
     for name in ("uv", "launchctl", "open"):
         tool = Path(os.environ["PATH"]) / name
         tool.write_text(
             f"#!{sys.executable}\n"
-            "import json, pathlib, sys\n"
+            "import json, pathlib, plistlib, shutil, sys\n"
             f"with pathlib.Path({str(records)!r}).open('a') as f:\n"
             f"    f.write(json.dumps([{name!r}, *sys.argv[1:]]) + '\\n')\n"
-            "if sys.argv[1:2] == ['bootout']: sys.exit(3)\n"
+            "args = sys.argv[1:]\n"
+            f"if {name!r} == 'uv':\n"
+            "    if args[0] == 'venv':\n"
+            "        root = pathlib.Path(args[-1])\n"
+            "        if '--clear' in args and root.exists(): shutil.rmtree(root)\n"
+            "        (root / 'bin').mkdir(parents=True)\n"
+            "        (root / 'bin/python').write_text('staged interpreter\\n')\n"
+            "    elif args[:2] == ['pip', 'install']:\n"
+            f"        if pathlib.Path({str(pip_failure)!r}).exists(): sys.exit(7)\n"
+            "        root = pathlib.Path(args[args.index('--python') + 1]).parent.parent\n"
+            "        (root / 'installed.txt').write_text('installed package\\n')\n"
+            f"if {name!r} == 'launchctl':\n"
+            f"    jobs = pathlib.Path({str(loaded_jobs)!r})\n"
+            "    if args[0] in ('print', 'bootout'):\n"
+            "        job = jobs / args[1].rsplit('/', 1)[-1]\n"
+            "        if args[0] == 'print': sys.exit(0 if job.exists() else 3)\n"
+            f"        if pathlib.Path({str(bootout_failure)!r}).exists(): sys.exit(3)\n"
+            "        job.unlink(missing_ok=True)\n"
+            "    elif args[0] == 'bootstrap':\n"
+            "        label = plistlib.loads(pathlib.Path(args[-1]).read_bytes())['Label']\n"
+            "        (jobs / label).touch()\n"
         )
         tool.chmod(0o755)
     monkeypatch.setenv("AZURE_API_KEY", "installation-fixture-secret")
@@ -64,6 +92,8 @@ def installation(tmp_path, monkeypatch, fake_tools):
         "repo": repo, "live": live, "config": config, "provider": provider,
         "provider_file": provider_file, "state_root": tmp_path / "assistant state",
         "records": records,
+        "loaded_jobs": loaded_jobs, "pip_failure": pip_failure,
+        "bootout_failure": bootout_failure,
     }
 
 
@@ -131,15 +161,15 @@ def test_dev_config_copy_only_mails_developer(installation):
     assert (p.workspace / "AGENTS.md").is_file()
     assert (p.root / "harness-live/guardrails.md").is_file()
     tool_calls = calls(installation)
-    assert tool_calls[:2] == [
-        ["uv", "venv", "--python", "3.13", str(p.root / "venv")],
-        ["uv", "pip", "install", "--python", str(p.root / "venv/bin/python"), str(installation["repo"] / "assistant")],
-    ]
     label = "com.local.dontwastetime.assistant.dev"
+    assert tool_calls[:3] == [
+        ["uv", "venv", "--clear", "--relocatable", "--python", "3.13", str(p.root / "venv.new")],
+        ["uv", "pip", "install", "--python", str(p.root / "venv.new/bin/python"), str(installation["repo"] / "assistant")],
+        ["launchctl", "print", f"gui/{os.getuid()}/{label}"],
+    ]
     plist = Path.home() / f"Library/LaunchAgents/{label}.plist"
     assert plistlib.loads(plist.read_bytes())["Label"] == label
-    assert tool_calls[2:] == [
-        ["launchctl", "bootout", f"gui/{os.getuid()}/{label}"],
+    assert tool_calls[3:] == [
         ["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist)],
     ]
     assert stat.S_IMODE((p.root / "Assistente.command").stat().st_mode) == 0o755
@@ -155,6 +185,7 @@ def test_install_is_idempotent(installation):
                     model_cost={"input": 1, "output": 2, "cache_read": 0.1})
     settings_file.write_text(json.dumps(settings))
     (p.root / "harness-live/stale.md").write_text("obsolete")
+    (p.root / "venv/stale.txt").write_text("old environment")
     installation["provider_file"].unlink()
     p2 = do_install(installation, provider_json=None)
     assert p2.root == p.root
@@ -163,7 +194,381 @@ def test_install_is_idempotent(installation):
     assert p2.settings.provider == settings["provider"]
     assert (p.memory_dir / "notes.md").read_text() == "keep my note\n"
     assert not (p.root / "harness-live/stale.md").exists()
+    assert not (p.root / "venv/stale.txt").exists()
     assert [c[1] for c in calls(installation) if c[0] == "uv"] == ["venv", "pip", "venv", "pip"]
+    assert [c for c in calls(installation) if c[:2] == ["uv", "venv"]][-1] == [
+        "uv", "venv", "--clear", "--relocatable", "--python", "3.13", str(p.root / "venv.new"),
+    ]
+
+
+@pytest.mark.parametrize("no_launchd", [False, True])
+def test_install_stages_venv_then_waits_for_tick_before_bootout(installation, monkeypatch, no_launchd):
+    import assistant.install as installer
+
+    p = do_install(installation)
+    installation["records"].write_text("")
+    tick_path = p.root / "tick.lock"
+    waiting = Event()
+    bootouts = []
+    flock = fcntl.flock
+    bootout = installer._bootout
+
+    def observe_flock(fd, operation):
+        if os.fstat(fd).st_ino == tick_path.stat().st_ino and operation != fcntl.LOCK_UN:
+            waiting.set()
+        return flock(fd, operation)
+
+    def checked_bootout(profile):
+        for lock_path in (tick_path, profile.root / "improve.lock", profile.root / "ui.lock"):
+            with lock_path.open("a") as probe:
+                with pytest.raises(BlockingIOError):
+                    flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        bootouts.append(profile.name)
+        bootout(profile)
+
+    monkeypatch.setattr(fcntl, "flock", observe_flock)
+    monkeypatch.setattr(installer, "_bootout", checked_bootout)
+    with tick_path.open("a") as held, ThreadPoolExecutor(max_workers=1) as pool:
+        flock(held.fileno(), fcntl.LOCK_EX)
+        pending = pool.submit(do_install, installation, no_launchd=no_launchd)
+        try:
+            assert waiting.wait(timeout=5)
+            assert not pending.done()
+            assert [call[:2] for call in calls(installation)] == [["uv", "venv"], ["uv", "pip"]]
+            assert (p.root / "venv.new/installed.txt").is_file()
+        finally:
+            flock(held.fileno(), fcntl.LOCK_UN)
+        pending.result(timeout=5)
+    assert bootouts == ["dev"]
+    assert [call[:2] for call in calls(installation)] == [
+        ["uv", "venv"], ["uv", "pip"], ["launchctl", "print"],
+        ["launchctl", "bootout"], ["launchctl", "print"], ["launchctl", "bootstrap"],
+    ]
+    for lock_path in (tick_path, p.root / "improve.lock", p.root / "ui.lock"):
+        with lock_path.open("a") as released:
+            flock(released.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+@pytest.mark.parametrize("profile_name", ["dev", "operator"])
+@pytest.mark.parametrize("no_launchd", [False, True])
+@pytest.mark.parametrize("uv_exit_code", [0, 7])
+def test_install_holds_improvement_lock_until_return_or_error(
+    installation, profile_name, no_launchd, uv_exit_code,
+):
+    p = load_profile(profile_name, state_root=installation["state_root"])
+    improve_path = p.root / "improve.lock"
+    uv = Path(os.environ["PATH"]) / "uv"
+    uv.write_text(
+        uv.read_text()
+        + "import fcntl\n"
+        f"with pathlib.Path({str(improve_path)!r}).open('a') as lock:\n"
+        "    try:\n"
+        "        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+        "    except BlockingIOError:\n"
+        "        pass\n"
+        "    else:\n"
+        "        sys.exit('improve.lock was released during install')\n"
+        f"if sys.argv[1:2] == ['venv']: sys.exit({uv_exit_code})\n"
+    )
+
+    if uv_exit_code:
+        with pytest.raises(subprocess.CalledProcessError) as error:
+            do_install(installation, profile_name, no_launchd=no_launchd)
+        assert error.value.returncode == uv_exit_code
+        assert error.value.cmd[1] == "venv"
+    else:
+        assert do_install(installation, profile_name, no_launchd=no_launchd).root == p.root
+
+    with improve_path.open("a") as released:
+        fcntl.flock(released.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def test_reinstall_pip_failure_keeps_old_venv_and_loaded_job(installation):
+    p = do_install(installation)
+    old_python = p.root / "venv/bin/python"
+    old_python.write_text("working interpreter\n")
+    old_inode = old_python.stat().st_ino
+    installation["records"].write_text("")
+    installation["pip_failure"].touch()
+
+    with pytest.raises(subprocess.CalledProcessError) as error:
+        do_install(installation)
+
+    assert error.value.returncode == 7
+    assert error.value.cmd[1:3] == ["pip", "install"]
+    assert old_python.read_text() == "working interpreter\n"
+    assert old_python.stat().st_ino == old_inode
+    assert not (p.root / "venv.new").exists()
+    assert not (p.root / "venv.old").exists()
+    assert [call[:2] for call in calls(installation)] == [["uv", "venv"], ["uv", "pip"]]
+    assert (installation["loaded_jobs"] / "com.local.dontwastetime.assistant.dev").exists()
+    for name in ("improve.lock", "ui.lock", "tick.lock"):
+        with (p.root / name).open("a") as probe:
+            fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def test_reinstall_swaps_staged_venv_under_locks_and_unlocks_tick_before_bootstrap(installation, monkeypatch):
+    import assistant.install as installer
+
+    p = do_install(installation)
+    (p.root / "venv/old.txt").write_text("old environment")
+    installation["records"].write_text("")
+    events = []
+    run = subprocess.run
+    rename = Path.rename
+
+    def check_locked(name):
+        with (p.root / name).open("a") as probe:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+    def observe_run(command, **kwargs):
+        tool = Path(command[0]).name
+        if tool == "uv" or command[:2] == ["launchctl", "bootstrap"]:
+            check_locked("ui.lock")
+            check_locked("improve.lock")
+        if tool == "uv":
+            events.append(command[1])
+            assert (p.root / "venv/old.txt").read_text() == "old environment"
+            assert (installation["loaded_jobs"] / "com.local.dontwastetime.assistant.dev").exists()
+        elif command[:2] == ["launchctl", "bootout"]:
+            events.append("bootout")
+        elif command[:2] == ["launchctl", "bootstrap"]:
+            events.append("bootstrap")
+            with (p.root / "tick.lock").open("a") as probe:
+                fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            assert (p.root / "venv/installed.txt").read_text() == "installed package\n"
+        return run(command, **kwargs)
+
+    def observe_rename(source, target):
+        if source in (p.root / "venv", p.root / "venv.new"):
+            for name in ("tick.lock", "ui.lock", "improve.lock"):
+                check_locked(name)
+            assert not (installation["loaded_jobs"] / "com.local.dontwastetime.assistant.dev").exists()
+        result = rename(source, target)
+        if source == p.root / "venv.new":
+            events.append("swap")
+        return result
+
+    monkeypatch.setattr(installer.subprocess, "run", observe_run)
+    monkeypatch.setattr(Path, "rename", observe_rename)
+    do_install(installation)
+
+    assert events == ["venv", "pip", "bootout", "swap", "bootstrap"]
+    assert (p.root / "venv/bin/python").read_text() == "staged interpreter\n"
+    assert not (p.root / "venv/old.txt").exists()
+    assert not (p.root / "venv.new").exists()
+    assert not (p.root / "venv.old").exists()
+
+
+@pytest.mark.parametrize("venv_kind", ["symlink", "file"])
+def test_reinstall_replaces_non_directory_venv(installation, venv_kind):
+    p = do_install(installation)
+    venv = p.root / "venv"
+    previous_venv = p.root / "previous-venv"
+    (venv / "old.txt").write_text("working environment")
+    venv.rename(previous_venv)
+    if venv_kind == "symlink":
+        venv.symlink_to(previous_venv, target_is_directory=True)
+    else:
+        venv.write_text("old environment file")
+    installation["records"].write_text("")
+
+    assert do_install(installation).root == p.root
+
+    assert venv.is_dir() and not venv.is_symlink()
+    assert (venv / "bin/python").read_text() == "staged interpreter\n"
+    assert (venv / "installed.txt").read_text() == "installed package\n"
+    assert not (venv / "old.txt").exists()
+    assert not (p.root / "venv.new").exists()
+    assert not (p.root / "venv.old").exists()
+    assert not (p.root / "venv.old").is_symlink()
+    assert (previous_venv / "old.txt").read_text() == "working environment"
+    plist = Path.home() / "Library/LaunchAgents/com.local.dontwastetime.assistant.dev.plist"
+    assert calls(installation)[-1] == ["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist)]
+    assert (installation["loaded_jobs"] / "com.local.dontwastetime.assistant.dev").exists()
+
+
+@pytest.mark.parametrize("leftover_kind", ["directory", "file", "symlink", "dangling-symlink"])
+def test_reinstall_removes_leftover_old_venv(installation, leftover_kind):
+    p = do_install(installation)
+    (p.root / "venv/old.txt").write_text("current environment")
+    old_venv = p.root / "venv.old"
+    target = p.root / "unrelated"
+    if leftover_kind == "directory":
+        old_venv.mkdir()
+        (old_venv / "stale.txt").write_text("leftover environment")
+    elif leftover_kind == "file":
+        old_venv.write_text("leftover file")
+    else:
+        if leftover_kind == "symlink":
+            target.mkdir()
+            (target / "keep.txt").write_text("unrelated data")
+        old_venv.symlink_to(target, target_is_directory=True)
+
+    assert do_install(installation).root == p.root
+
+    assert (p.root / "venv/bin/python").read_text() == "staged interpreter\n"
+    assert (p.root / "venv/installed.txt").read_text() == "installed package\n"
+    assert not (p.root / "venv/old.txt").exists()
+    assert not (p.root / "venv.new").exists()
+    assert not old_venv.exists()
+    assert not old_venv.is_symlink()
+    if leftover_kind == "symlink":
+        assert (target / "keep.txt").read_text() == "unrelated data"
+
+
+def test_reinstall_refuses_swap_if_bootout_leaves_job_loaded(installation):
+    p = do_install(installation)
+    (p.root / "venv/old.txt").write_text("working environment")
+    installation["records"].write_text("")
+    installation["bootout_failure"].touch()
+
+    with pytest.raises(RuntimeError, match="launchd"):
+        do_install(installation)
+
+    assert (p.root / "venv/old.txt").read_text() == "working environment"
+    assert not (p.root / "venv.old").exists()
+    assert [call[1] for call in calls(installation) if call[0] == "launchctl"][:3] == [
+        "print", "bootout", "print",
+    ]
+    assert (installation["loaded_jobs"] / "com.local.dontwastetime.assistant.dev").exists()
+
+
+@pytest.mark.parametrize("error_type", [OSError, KeyboardInterrupt, SystemExit])
+def test_reinstall_restores_old_venv_if_staged_rename_fails(installation, monkeypatch, error_type):
+    p = do_install(installation)
+    old_python = p.root / "venv/bin/python"
+    old_python.write_text("working interpreter\n")
+    old_inode = old_python.stat().st_ino
+    installation["records"].write_text("")
+    rename = Path.rename
+    failure = error_type("rename failed")
+
+    def fail_staged_rename(source, target):
+        if source == p.root / "venv.new":
+            raise failure
+        return rename(source, target)
+
+    monkeypatch.setattr(Path, "rename", fail_staged_rename)
+    with pytest.raises(error_type, match="rename failed") as error:
+        do_install(installation)
+
+    assert error.value is failure
+    assert old_python.read_text() == "working interpreter\n"
+    assert old_python.stat().st_ino == old_inode
+    assert not (p.root / "venv.new").exists()
+    assert not (p.root / "venv.old").exists()
+    assert calls(installation)[-1][:2] == ["launchctl", "bootstrap"]
+    assert (installation["loaded_jobs"] / "com.local.dontwastetime.assistant.dev").exists()
+
+
+@pytest.mark.parametrize("no_launchd", [False, True])
+@pytest.mark.parametrize("bootstrap_fails", [False, True])
+@pytest.mark.parametrize("error_type", [ValueError, KeyboardInterrupt, SystemExit])
+def test_reinstall_restores_existing_job_after_render_failure(
+    installation, monkeypatch, no_launchd, bootstrap_fails, error_type,
+):
+    import assistant.install as installer
+
+    p = do_install(installation)
+    plist = Path.home() / "Library/LaunchAgents/com.local.dontwastetime.assistant.dev.plist"
+    old_plist = plist.read_bytes()
+    installation["records"].write_text("")
+    rendered = []
+    failure = error_type("render failed")
+
+    def fail_render(*args):
+        rendered.append(True)
+        raise failure
+
+    run = subprocess.run
+
+    def fail_bootstrap(command, **kwargs):
+        if command[:2] == ["launchctl", "bootstrap"]:
+            # Preserve the failure that triggered recovery, even if recovery fails.
+            with installation["records"].open("a") as record:
+                record.write(json.dumps(command) + "\n")
+            raise OSError("bootstrap failed")
+        return run(command, **kwargs)
+
+    monkeypatch.setattr(installer, "render_workspace", fail_render)
+    if bootstrap_fails:
+        monkeypatch.setattr(installer.subprocess, "run", fail_bootstrap)
+    with pytest.raises(error_type, match="render failed") as error:
+        do_install(installation, no_launchd=no_launchd)
+
+    assert error.value is failure
+    assert rendered == [True]
+    assert plist.read_bytes() == old_plist
+    assert [call[1] for call in calls(installation) if call[0] == "launchctl"] == [
+        "print", "bootout", "print", "bootstrap",
+    ]
+    assert calls(installation)[-1] == ["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist)]
+    if not bootstrap_fails:
+        assert (installation["loaded_jobs"] / "com.local.dontwastetime.assistant.dev").exists()
+    for name in ("improve.lock", "ui.lock", "tick.lock"):
+        with (p.root / name).open("a") as probe:
+            fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+@pytest.mark.parametrize("was_loaded", [False, True])
+def test_no_launchd_keeps_existing_registration_only(installation, was_loaded):
+    p = do_install(installation, no_launchd=not was_loaded)
+    plist = Path.home() / "Library/LaunchAgents/com.local.dontwastetime.assistant.dev.plist"
+    # An existing job must retain its original plist, including custom fields.
+    if was_loaded:
+        content = plistlib.loads(plist.read_bytes())
+        content["StartInterval"] = 1234
+        plist.write_bytes(plistlib.dumps(content))
+    previous_plist = plist.read_bytes() if plist.exists() else None
+    installation["records"].write_text("")
+
+    do_install(installation, no_launchd=True)
+
+    launchctl = [call[1] for call in calls(installation) if call[0] == "launchctl"]
+    assert launchctl == (["print", "bootout", "print", "bootstrap"] if was_loaded else ["print"])
+    assert (plist.read_bytes() if plist.exists() else None) == previous_plist
+    assert (installation["loaded_jobs"] / "com.local.dontwastetime.assistant.dev").exists() == was_loaded
+    assert (p.root / "venv/installed.txt").is_file()
+
+
+@pytest.mark.parametrize("invalid", ["guardrails", "symlink"])
+def test_invalid_harness_refused_before_uv_or_launchctl(installation, invalid):
+    p = do_install(installation)
+    installation["records"].write_text("")
+    guardrails = installation["repo"] / "assistant/harness/guardrails.md"
+    if invalid == "guardrails":
+        guardrails.write_text("invalid guardrails")
+    else:
+        (guardrails.parent / "linked.md").symlink_to(guardrails)
+    with pytest.raises(ValueError):
+        do_install(installation)
+    assert calls(installation) == []
+    assert (p.root / "venv/installed.txt").is_file()
+    assert (installation["loaded_jobs"] / "com.local.dontwastetime.assistant.dev").exists()
+
+
+def test_install_refuses_ui_lock_held_by_another_process_before_tools(installation):
+    p = load_profile("dev", state_root=installation["state_root"])
+    script = (
+        "import fcntl, pathlib, sys\n"
+        "with pathlib.Path(sys.argv[1]).open('a') as lock:\n"
+        "    fcntl.flock(lock.fileno(), fcntl.LOCK_EX)\n"
+        "    print('locked', flush=True)\n"
+        "    sys.stdin.read()\n"
+    )
+    with subprocess.Popen(
+        [sys.executable, "-c", script, str(p.root / "ui.lock")],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+    ) as holder:
+        try:
+            assert holder.stdout.readline().strip() == "locked"
+            with pytest.raises(RuntimeError, match="Chiudi l'assistente prima di aggiornarlo"):
+                do_install(installation)
+            assert not installation["records"].exists()
+        finally:
+            holder.communicate(timeout=5)
 
 
 def test_install_omits_harness2_stubs(installation):
@@ -316,7 +721,9 @@ def test_operator_uses_live_config_and_no_launchd(installation):
     assert p.settings.dwt_config == installation["repo"] / "config.json"
     assert p.settings.dwt_env == installation["repo"] / ".env"
     assert not (p.root / "dwt").exists()
-    assert all(c[0] != "launchctl" for c in calls(installation))
+    assert [c for c in calls(installation) if c[0] == "launchctl"] == [
+        ["launchctl", "print", f"gui/{os.getuid()}/com.local.dontwastetime.assistant.operator"],
+    ]
     assert not (Path.home() / "Library/LaunchAgents").exists()
 
 
@@ -427,6 +834,22 @@ def test_reinstall_refuses_active_ui_before_mutating_profile(installation, profi
     assert calls(installation) == previous_calls
     assert {file.relative_to(p.root): (file.read_bytes(), file.stat().st_ino)
             for file in p.root.rglob("*") if file.is_file()} == before
+
+
+@pytest.mark.parametrize("profile_name", ["dev", "operator"])
+@pytest.mark.parametrize("no_launchd", [False, True])
+def test_reinstall_refuses_active_improvement_before_mutating_profile(installation, profile_name, no_launchd):
+    p = do_install(installation, profile_name, no_launchd=True)
+    with (p.root / "improve.lock").open("a") as held:
+        fcntl.flock(held.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        before = {file.relative_to(p.root): (file.read_bytes(), file.stat().st_ino)
+                  for file in p.root.rglob("*") if file.is_file()}
+        previous_calls = calls(installation)
+        with pytest.raises(RuntimeError, match="(?i)miglioramento.*prima di aggiornarlo"):
+            do_install(installation, profile_name, no_launchd=no_launchd)
+        assert calls(installation) == previous_calls
+        assert {file.relative_to(p.root): (file.read_bytes(), file.stat().st_ino)
+                for file in p.root.rglob("*") if file.is_file()} == before
 
 
 @pytest.mark.parametrize("recipients, chosen", [

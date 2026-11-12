@@ -86,7 +86,7 @@ The profile's launchd job is
 `~/Library/LaunchAgents/com.local.dontwastetime.assistant.<profile>.plist`, logging
 to `logs/tick.log` at login, every 15 minutes, and 09:00.
 Use `install --no-launchd` for a local trial
-without registering the job.
+without registering a new job; an already-registered job is kept.
 
 ```sh
 make assistant-uninstall PROFILE=dev          # keep profile state
