@@ -13,6 +13,7 @@ import shutil
 from assistant import harness_rules
 from assistant.bench import gate
 from assistant.bench.adapter import OperatorAdapter
+from assistant.bench.evidence import freeze_evidence
 from assistant.bench.report import write_report
 from assistant.bench.seed import SeedTurn, SeededTurn, build_seed_turns, ensure_seed_snapshot
 from assistant.h2 import harness2
@@ -38,7 +39,10 @@ def _state_lock(p: Profile):
 
 
 def fingerprint(directory: Path) -> str:
-    tree = harness_rules.load_tree(directory)
+    return _tree_fingerprint(harness_rules.load_tree(directory))
+
+
+def _tree_fingerprint(tree: dict[str, str]) -> str:
     return hashlib.sha256(json.dumps(sorted(tree.items()), ensure_ascii=False).encode()).hexdigest()
 
 
@@ -57,17 +61,40 @@ def _real_turns(p: Profile) -> list[Turn]:
 
 
 def assign_splits(p: Profile, turns: list[Turn]) -> dict[str, str]:
-    """Assign a stable 20% holdout once; eviction never changes membership."""
+    """Keep whole sessions together, quarantining mixed legacy assignments."""
     with _state_lock(p):
         path = p.bench_dir / "splits.json"
-        splits = _read_object(path)
-        if any(value not in ("train", "holdout") for value in splits.values()):
+        stored = _read_object(path)
+        if stored.get("version") == 2:
+            sessions, legacy = stored["sessions"], stored["legacy_turns"]
+        else:
+            sessions, legacy = {}, stored
+        if (not isinstance(sessions, dict) or not isinstance(legacy, dict)
+                or any(value not in ("train", "holdout", "excluded") for value in sessions.values())
+                or any(value not in ("train", "holdout") for value in legacy.values())):
             raise ValueError("Split persistenti non validi.")
+        groups = {}
         for turn in turns:
-            split = (turn.seed.split if getattr(turn, "seed", None) else
-                     "holdout" if int(hashlib.sha256(turn.turn_id.encode()).hexdigest(), 16) % 5 == 0 else "train")
-            splits.setdefault(turn.turn_id, split)
-        _json(path, splits)
+            if not getattr(turn, "seed", None):
+                groups.setdefault(turn.session_id, set()).add(turn.turn_id)
+        for session_id, identifiers in groups.items():
+            prior = {value for identifier, value in legacy.items()
+                     if identifier in identifiers or identifier.startswith(session_id + ":")}
+            if len(prior) > 1:
+                sessions[session_id] = "excluded"
+            else:
+                hashed = "holdout" if int(hashlib.sha256(session_id.encode()).hexdigest(), 16) % 5 == 0 else "train"
+                sessions.setdefault(session_id, next(iter(prior)) if prior else hashed)
+        splits, seeds = {}, dict(stored.get("seeds", {})) if stored.get("version") == 2 else {}
+        for turn in turns:
+            if getattr(turn, "seed", None):
+                seeds[turn.turn_id] = splits[turn.turn_id] = turn.seed.split
+            else:
+                split = sessions[turn.session_id]
+                if split == "excluded":
+                    split = "holdout" if legacy.get(turn.turn_id) == "holdout" else "excluded"
+                splits[turn.turn_id] = split
+        _json(path, {"version": 2, "sessions": sessions, "seeds": seeds, "legacy_turns": legacy})
         return splits
 
 
@@ -168,14 +195,16 @@ def run_task(*args, **kwargs):
     return h2_run_task(*args, **kwargs)
 
 
-def _propose(p: Profile, state: dict, batch: list[Turn], seeds: dict[str, SeedTurn], snapshot: Path):
+def _propose(p: Profile, state: dict, batch: list[Turn], seeds: dict[str, SeedTurn], snapshot: Path,
+             evidence: dict[str, str]):
     h2 = harness2()
     from harness2.core.library import Library
     from harness2.core.proposer import Proposer
     from harness2.core.schedule import Namespace
     from harness2.core.spec import ChannelSpec
 
-    adapter = OperatorAdapter(p, batch, seeds, batch_id=state["batch_id"], seed_snapshot=snapshot)
+    adapter = OperatorAdapter(p, batch, seeds, batch_id=state["batch_id"], seed_snapshot=snapshot,
+                             frozen_evidence={turn.turn_id: evidence[turn.turn_id] for turn in batch})
     root = p.bench_dir / "h2/runs/operator"
     result = run_task(state["batch_id"], 1, adapter=adapter,
                       prop=Proposer(ChannelSpec(kind="opencode", model=p.settings.model, timeout=1800)),
@@ -229,6 +258,7 @@ def run_improvement(p: Profile, now: datetime, *, max_batch: int = 25, max_regre
     if (type(max_batch) is not int or not 1 <= max_batch <= 25
             or type(max_regression) is not int or not 1 <= max_regression <= 60):
         raise ValueError("Limiti richiesti: batch 1–25, regressione 1–60.")
+    resuming = bool(run_id)
     if run_id:
         directory = _run_dir(p, run_id)
         if (directory / "GATE").is_file():
@@ -270,13 +300,21 @@ def run_improvement(p: Profile, now: datetime, *, max_batch: int = 25, max_regre
         save_markers(p, markers)
     seeds = {turn.turn_id: turn.seed for turn in [*batch, *regression] if getattr(turn, "seed", None)}
     live, candidate_scores, result, tree = [], [], None, {}
-    failure = None
+    failure, candidate_fingerprint = None, None
     try:
         if not batch:
             raise ValueError("Nessun nuovo turno di training disponibile.")
         if fingerprint(p.root / "harness-live") != state["live_fingerprint"]:
             raise ValueError("Il live è cambiato: il confronto congelato non è più valido.")
-        tree = _propose(p, state, batch, seeds, Path(state["seed_snapshot"]))
+        if resuming and not (directory / "evidence.json").is_file():
+            raise ValueError("Reazioni congelate mancanti: impossibile riprendere il confronto.")
+        if resuming:
+            current_splits = assign_splits(p, [*batch, *regression, *_real_turns(p)])
+            if any(current_splits[turn.turn_id] != "train" for turn in batch):
+                raise ValueError("Il batch ripreso contiene una sessione holdout o esclusa dal training.")
+        with _state_lock(p):
+            evidence = freeze_evidence(p, [*batch, *regression], directory / "evidence.json")
+        tree = _propose(p, state, batch, seeds, Path(state["seed_snapshot"]), evidence)
         # Publish the validated candidate before evaluating it. A crash can
         # resume Harness²'s cached selection without changing the frozen cohort.
         candidate = directory / "candidate"
@@ -284,12 +322,16 @@ def run_improvement(p: Profile, now: datetime, *, max_batch: int = 25, max_regre
             shutil.rmtree(candidate)
         for name, text in tree.items():
             _atomic_write(candidate / name, text)
+        candidate_fingerprint = fingerprint(candidate)
         for label, target, scores in (("live", p.root / "harness-live", live),
                                       ("candidate", candidate, candidate_scores)):
             scores.extend(gate.evaluate(p, target, regression, directory / f"{run_id}-{label}",
-                                        seeds=seeds, seed_snapshot=Path(state["seed_snapshot"])))
+                                        seeds=seeds, seed_snapshot=Path(state["seed_snapshot"]),
+                                        frozen_evidence=evidence))
         if fingerprint(p.root / "harness-live") != state["live_fingerprint"]:
             raise ValueError("Il live è cambiato durante la valutazione.")
+        if fingerprint(candidate) != candidate_fingerprint:
+            raise ValueError("Il candidato è cambiato durante la valutazione.")
         result = gate.regression_gate(live, candidate_scores)
     except (ValueError, gate.EvaluationIncomplete) as error:
         failure = str(error)
@@ -309,20 +351,34 @@ def run_improvement(p: Profile, now: datetime, *, max_batch: int = 25, max_regre
         extra += f"\n⚠ sopra la soglia mensile di ${p.settings.soft_cap_usd:g}.\n"
     _atomic_write(report, report.read_text(encoding="utf-8") + extra)
     (directory / "candidate").mkdir(mode=0o700, exist_ok=True)
+    _json(directory / "gate.json", {"result": "passed" if passed else "failed",
+                                    "candidate_fingerprint": candidate_fingerprint,
+                                    "reason": failure or ("Regressione superata." if passed else "Regressione fallita.")})
     _atomic_write(directory / "GATE", "passed\n" if passed else "failed\n")  # LAST artifact.
     _finish(p, run_id)
     return directory
 
 
-def promote(p: Profile, run_id: str, repo: Path) -> list[Path]:
-    directory = _run_dir(p, run_id)
+def _passed_fingerprint(directory: Path) -> str:
     if not (directory / "GATE").is_file() or (directory / "GATE").read_text(encoding="utf-8").strip() != "passed":
         raise ValueError("Promozione rifiutata: il GATE non è passed.")
+    receipt = _read_object(directory / "gate.json")
+    value = receipt.get("candidate_fingerprint")
+    if receipt.get("result") != "passed" or not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+        raise ValueError("Promozione rifiutata: il GATE non contiene il fingerprint valutato.")
+    return value
+
+
+def promote(p: Profile, run_id: str, repo: Path) -> list[Path]:
+    directory = _run_dir(p, run_id)
+    expected = _passed_fingerprint(directory)
     source = directory / "candidate"
     if not source.is_dir() or source.is_symlink():
         raise ValueError("Candidato non disponibile.")
     after = harness_rules.load_tree(source)
     harness_rules.validate_tree(after)
+    if _tree_fingerprint(after) != expected:
+        raise ValueError("Promozione rifiutata: fingerprint diverso dal candidato valutato.")
     target = Path(repo).expanduser().resolve() / "assistant/harness"
     if target.is_symlink() or target.parent.is_symlink():
         raise ValueError("La destinazione non può essere un collegamento simbolico.")
@@ -345,9 +401,7 @@ def record_promoted_install(p: Profile, previous: str | None, now: datetime) -> 
         return
     for directory in sorted((p.bench_dir / "runs").glob("*"), reverse=True):
         try:
-            if (directory / "GATE").read_text(encoding="utf-8").strip() != "passed":
-                continue
-            if fingerprint(directory / "candidate") != current:
+            if _passed_fingerprint(directory) != current or fingerprint(directory / "candidate") != current:
                 continue
             summary = next(line for line in (directory / "report.md").read_text(encoding="utf-8").splitlines()
                            if line.startswith("Ho imparato: "))

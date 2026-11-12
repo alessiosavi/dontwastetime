@@ -459,6 +459,9 @@ def test_promoted_status_recorded_on_install(installation):
     path = candidate / "systemprompt.md"
     path.write_text(path.read_text() + "\nRisposte più brevi nelle bozze.\n")
     (candidate.parent / "GATE").write_text("passed\n")
+    (candidate.parent / "gate.json").write_text(json.dumps({
+        "result": "passed", "candidate_fingerprint": fingerprint(candidate),
+    }))
     (candidate.parent / "report.md").write_text("## Sintesi\n\nHo imparato: risposte più brevi nelle bozze\n")
     shutil.copytree(candidate, installation["repo"] / "assistant/harness", dirs_exist_ok=True)
     do_install(installation, no_launchd=True)

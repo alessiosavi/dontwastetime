@@ -103,19 +103,19 @@ def test_adapter_validate_tree_uses_local_rules(profile, bench_turn):
 
 
 @pytest.mark.parametrize("judge_missing", [False, True])
-def test_adapter_score_uses_judge_and_latest_evidence(profile, bench_turn, bench_snapshot,
+def test_adapter_score_uses_judge_and_frozen_evidence(profile, bench_turn, bench_snapshot,
                                                      event_runner, monkeypatch, judge_missing):
     from assistant.bench import judge
 
     event_runner()
     second = replace(bench_turn, turn_id="session:1", message="grazie")
     turns = [bench_turn, second]
+    monkeypatch.setattr(judge, "evidence_for", lambda turn, *, latest: f"{turn.turn_id}:{latest.name}")
     adapter = make_adapter(profile, turns)
     run_dir = adapter.execute("batch-15", HARNESS, "scores/base1")
     later = profile.snapshots_dir / "dwt-20261112T100000Z.db"
     shutil.copy2(bench_snapshot, later)
     seen = []
-    monkeypatch.setattr(judge, "evidence_for", lambda turn, *, latest: f"{turn.turn_id}:{latest.name}")
     def grade(p, turn, rollout, evidence, *, seed=None):
         seen.append((turn.turn_id, rollout.reply, evidence))
         if judge_missing and turn is second:
@@ -126,7 +126,7 @@ def test_adapter_score_uses_judge_and_latest_evidence(profile, bench_turn, bench
     assert adapter.score(run_dir, "batch-15") == (None if judge_missing else {
         "n_passed": 8, "n_criteria": 10, "mean": 7.0})
     assert len(seen) == 2
-    assert all(reply.endswith("DONE") and evidence.endswith(later.name) for _, reply, evidence in seen)
+    assert all(reply.endswith("DONE") and evidence.endswith(bench_snapshot.name) for _, reply, evidence in seen)
 
 
 def test_adapter_score_rejects_missing_and_empty_cohorts(profile, bench_turn, bench_snapshot,

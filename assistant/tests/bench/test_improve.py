@@ -22,7 +22,7 @@ HARNESS = Path(__file__).resolve().parents[2] / "harness"
 
 
 def turn(identifier, **kwargs):
-    return replace(Turn(identifier, "session", 0, NOW, [], "ciao", "ciao", [], None, [], "dev"), **kwargs)
+    return replace(Turn(identifier, identifier, 0, NOW, [], "ciao", "ciao", [], None, [], "dev"), **kwargs)
 
 
 def read(path):
@@ -89,8 +89,9 @@ def test_splits_assigned_once_and_stable(rig):
     first = improve.assign_splits(rig.p, turns)
     assert 70 <= list(first.values()).count("holdout") <= 130
     assert improve.assign_splits(rig.p, list(reversed(turns))) == first
-    assert read(rig.p.bench_dir / "splits.json") == first
-    assert improve.assign_splits(rig.p, [turn("new")]).items() >= first.items()
+    assert read(rig.p.bench_dir / "splits.json")["sessions"] == first
+    improve.assign_splits(rig.p, [turn("new")])
+    assert read(rig.p.bench_dir / "splits.json")["sessions"].items() >= first.items()
 
 
 def test_holdout_never_trained_even_after_eviction(rig):
@@ -98,7 +99,38 @@ def test_holdout_never_trained_even_after_eviction(rig):
     (rig.p.bench_dir / "splits.json").write_text(json.dumps(dict.fromkeys([t.turn_id for t in rig.real], "holdout")))
     regression = improve.update_regression_set(rig.p)
     assert len(regression) == 60 and "0" not in {t.turn_id for t in regression}
-    assert improve.select_batch(rig.real, read(rig.p.bench_dir / "splits.json")) == []
+    assert improve.select_batch(rig.real, improve.assign_splits(rig.p, rig.real)) == []
+
+
+def test_real_turns_split_by_session(rig):
+    first = turn("session0:0", session_id="session0", message="PRIVATE HOLDOUT")
+    second = turn("session0:1", session_id="session0", history=[("user", first.message)])
+    splits = improve.assign_splits(rig.p, [first, second, *rig.seeds])
+    assert splits[first.turn_id] == splits[second.turn_id] == "train"  # sha256(session0) % 5 == 1
+    stored = read(rig.p.bench_dir / "splits.json")
+    assert stored["sessions"]["session0"] == splits[first.turn_id]
+    assert all(splits[t.turn_id] == t.seed.split for t in rig.seeds)
+    assert improve.assign_splits(rig.p, [second])[second.turn_id] == splits[first.turn_id]
+
+
+def test_mixed_legacy_session_never_exposed_to_training(rig):
+    rig.real.extend([
+        turn("session0:0", session_id="session0", message="PRIVATE HOLDOUT"),
+        turn("session0:1", session_id="session0", history=[("user", "PRIVATE HOLDOUT")]),
+    ])
+    (rig.p.bench_dir / "splits.json").write_text(json.dumps({"session0:0": "holdout", "session0:1": "train"}))
+    directory = improve.run_improvement(rig.p, NOW)
+    state = read(directory / "run.json")
+    assert not set(state["batch_ids"]) & {"session0:0", "session0:1"}
+    assert "session0:0" in state["regression_ids"]
+    adapter = rig.calls[0][2]["adapter"]
+    assert "PRIVATE HOLDOUT" not in adapter.task_prompt(adapter.batch_id)
+    evidence = adapter.task_files(adapter.batch_id)
+    assert "PRIVATE HOLDOUT" not in (evidence / "reazioni.md").read_text()
+    # A later export/eviction must not allow any turn of this session to train.
+    later = turn("session0:2", session_id="session0", message="PRIVATE HOLDOUT")
+    splits = improve.assign_splits(rig.p, [later])
+    assert improve.select_batch([later], splits) == []
 
 
 def test_run_state_written_before_paid_work(rig, monkeypatch):
@@ -220,6 +252,72 @@ def test_improve_resumes_unfinished_run(rig, monkeypatch):
     assert (directory / "GATE").read_text().strip() == "passed"
 
 
+def test_evidence_frozen_before_paid_work_and_resume(rig, monkeypatch):
+    from assistant.bench import judge
+
+    seen, task_text, evaluations = [], [], []
+    def evidence(turn, *, latest):
+        seen.append(turn.turn_id)
+        return "frozen:" + latest.name
+    monkeypatch.setattr(judge, "evidence_for", evidence)
+    original = improve.run_task
+    def crash(*args, **kwargs):
+        adapter = kwargs["adapter"]
+        directory = rig.p.bench_dir / "runs" / load_markers(rig.p).improve_run
+        frozen = read(directory / "evidence.json")
+        assert set(frozen) == {t.turn_id for t in rig.seeds}
+        task_text.append((adapter.task_files(adapter.batch_id) / "reazioni.md").read_text())
+        raise RuntimeError("interrupted")
+    monkeypatch.setattr(improve, "run_task", crash)
+    with pytest.raises(RuntimeError, match="interrupted"):
+        improve.run_improvement(rig.p, NOW)
+    directory = rig.p.bench_dir / "runs" / load_markers(rig.p).improve_run
+    frozen = (directory / "evidence.json").read_bytes()
+    shutil.copy2(rig.snapshot, rig.snapshot.with_name("dwt-20261112T100000Z.db"))
+    def resumed(*args, **kwargs):
+        adapter = kwargs["adapter"]
+        task_text.append((adapter.task_files(adapter.batch_id) / "reazioni.md").read_text())
+        return original(*args, **kwargs)
+    def evaluate(p, tree, turns, run, **kwargs):
+        evaluations.append(kwargs["frozen_evidence"])
+        return [TurnScore(t.turn_id, dict.fromkeys(RUBRIC_DIMENSIONS, 8), [], 8, "") for t in turns]
+    monkeypatch.setattr(improve, "run_task", resumed)
+    monkeypatch.setattr(improve.gate, "evaluate", evaluate)
+    improve.run_improvement(rig.p, NOW + timedelta(hours=1))
+    assert len(seen) == len(set(seen)) == len(rig.seeds)
+    assert task_text[0] == task_text[1] and "dwt-20261112T083000Z.db" in task_text[0]
+    assert (directory / "evidence.json").read_bytes() == frozen
+    assert evaluations == [read(directory / "evidence.json")] * 2
+
+
+def test_resume_rejects_training_session_quarantined_since_crash(rig, monkeypatch):
+    rig.real.append(turn("session0:1", session_id="session0", history=[("user", "PRIVATE HOLDOUT")]))
+    original = improve.run_task
+    def crash(*args, **kwargs):
+        raise RuntimeError("interrupted")
+    monkeypatch.setattr(improve, "run_task", crash)
+    with pytest.raises(RuntimeError, match="interrupted"):
+        improve.run_improvement(rig.p, NOW)
+    # An old split receipt becomes visible after the interrupted training call.
+    (rig.p.bench_dir / "splits.json").write_text(json.dumps({"session0:0": "holdout", "session0:1": "train"}))
+    monkeypatch.setattr(improve, "run_task", original)
+    directory = improve.run_improvement(rig.p, NOW + timedelta(hours=1))
+    assert (directory / "GATE").read_text().strip() == "failed"
+    assert rig.calls == []
+
+
+def test_changed_candidate_during_evaluation_fails_gate(rig, monkeypatch):
+    original = improve.gate.evaluate
+    def evaluate(p, tree, turns, run, **kwargs):
+        if tree.name == "candidate":
+            path = tree / "systemprompt.md"
+            path.write_text(path.read_text() + "\nNon valutato.\n")
+        return original(p, tree, turns, run, **kwargs)
+    monkeypatch.setattr(improve.gate, "evaluate", evaluate)
+    directory = improve.run_improvement(rig.p, NOW)
+    assert (directory / "GATE").read_text().strip() == "failed"
+
+
 def test_training_exposure_never_reused(rig):
     rig.real.extend(turn(str(i)) for i in range(5))
     (rig.p.bench_dir / "splits.json").write_text(json.dumps(dict.fromkeys([t.turn_id for t in rig.real], "train")))
@@ -282,6 +380,25 @@ def test_promote_copies_validated_tree(rig, tmp_path):
     (directory / "candidate/scripts/evil.sh").write_text("evil")
     with pytest.raises(ValueError):
         improve.promote(rig.p, directory.name, repo)
+
+
+def test_promote_refuses_candidate_changed_after_evaluation(rig, tmp_path):
+    directory = improve.run_improvement(rig.p, NOW)
+    repo = tmp_path / "repo"
+    shutil.copytree(HARNESS, repo / "assistant/harness")
+    before = load_tree(repo / "assistant/harness")
+    prompt = directory / "candidate/systemprompt.md"
+    prompt.write_text(prompt.read_text() + "\nUna modifica mai valutata.\n")
+    with pytest.raises(ValueError, match="fingerprint|valutat"):
+        improve.promote(rig.p, directory.name, repo)
+    assert load_tree(repo / "assistant/harness") == before
+
+
+def test_promote_refuses_legacy_pass_without_fingerprint(rig, tmp_path):
+    directory = improve.run_improvement(rig.p, NOW)
+    (directory / "gate.json").unlink(missing_ok=True)
+    with pytest.raises(ValueError, match="GATE|fingerprint"):
+        improve.promote(rig.p, directory.name, tmp_path)
 
 
 def test_improve_soft_cap_warning(rig):

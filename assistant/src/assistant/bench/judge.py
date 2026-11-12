@@ -127,17 +127,19 @@ def judge_turn(
 ) -> TurnScore | None:
     seed = seed or getattr(turn, "seed", None)
     try:
+        failed = json.loads((rollout.run_dir / "done.json").read_text(encoding="utf-8")).get("failed", False)
+    except FileNotFoundError:
+        failed = False
+    if failed:
+        return None
+    try:
         deterministic = _deterministic(p, turn, rollout, seed)
     except Exception as error:
         logger.warning("Controlli del turno %s non disponibili (%s).", turn.turn_id, type(error).__name__)
         return None
-    try:
-        failed = json.loads((rollout.run_dir / "done.json").read_text(encoding="utf-8")).get("failed", False)
-    except FileNotFoundError:
-        failed = False
-    if failed or not rollout.reply.strip():
+    if not rollout.reply.strip():
         return TurnScore(turn.turn_id, dict.fromkeys(RUBRIC_DIMENSIONS, 0.0), deterministic, 0.0,
-                         "Rollout fallito o risposta vuota.")
+                         "Risposta vuota.")
     data = {
         "conversazione": transcript(turn), "risposta_candidata": rollout.reply,
         "strumenti_candidato": [{"name": f"{call.server}_{call.tool}" if call.server else call.tool,

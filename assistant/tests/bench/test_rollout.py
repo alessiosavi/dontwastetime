@@ -103,7 +103,7 @@ def test_execute_turns_use_ops_store(profile, bench_turn, bench_snapshot, tmp_pa
     assert invocation["env"]["XDG_DATA_HOME"] == str(profile.root / "opencode-ops/data")
     assert invocation["env"]["OPENCODE_CONFIG"] == str(tmp_path / "run/session_0/ws/opencode.json")
     usage, = [json.loads(line) for line in (profile.root / "usage.jsonl").read_text().splitlines()]
-    assert usage["call_id"] == "rollout:run:session:0"
+    assert usage["call_id"] == "rollout:run:session:0:ses_e32d1389bffeWkff0K3fth8DPG"
     assert (usage["tokens_in"], usage["tokens_out"], usage["tokens_cache_read"]) == (1420, 77, 1536)
 
 
@@ -122,7 +122,7 @@ def test_stub_turn_uses_stub_dwt_command(profile, bench_turn, bench_snapshot, tm
 
 
 @pytest.mark.parametrize("failure", ["exit", "timeout"])
-def test_failed_rollout_is_scored_zero_not_retried(profile, bench_turn, bench_snapshot, tmp_path,
+def test_failed_rollout_is_incomplete_not_retried(profile, bench_turn, bench_snapshot, tmp_path,
                                                   event_runner, monkeypatch, failure):
     from assistant import opencode_env
     from assistant.bench.judge import judge_turn
@@ -139,7 +139,7 @@ def test_failed_rollout_is_scored_zero_not_retried(profile, bench_turn, bench_sn
     assert json.loads((result.run_dir / "done.json").read_text())["failed"] is True
     monkeypatch.setattr(opencode_env, "run_prompt", lambda *a, **k: pytest.fail("failed rollout must not call judge"))
     score = judge_turn(profile, bench_turn, result, "")
-    assert score.mean == 0 and set(score.dims.values()) == {0}
+    assert score is None
     assert len(log.read_text().splitlines()) == 1 if failure == "exit" else not log.exists()
     usage = json.loads((profile.root / "usage.jsonl").read_text())
     assert usage["tokens_in"] == (1420 if failure == "exit" else 9)
@@ -194,3 +194,31 @@ def test_safe_turn_names_cannot_overwrite_one_another(profile, bench_turn, bench
     event_runner()
     with pytest.raises(ValueError, match="conflitto"):
         execute(profile, [bench_turn, replace(bench_turn, turn_id="session/0")], tmp_path / "run")
+
+
+@pytest.mark.parametrize("with_session", [True, False])
+def test_crash_rerun_records_both_paid_rollout_sessions(profile, bench_turn, bench_snapshot, tmp_path,
+                                                       event_runner, monkeypatch, with_session):
+    from assistant.bench import rollout
+
+    def output(session):
+        return json.dumps({"type": "step_finish", **({"sessionID": session} if with_session else {}),
+                           "part": {"tokens": {"input": 9, "output": 2}}}) + "\n"
+    event_runner(stdout=output("ses_first"))
+    original = rollout._atomic_write
+    def crash(path, text):
+        if path.name == "done.json":
+            raise RuntimeError("crash after usage, before cache commit")
+        original(path, text)
+    monkeypatch.setattr(rollout, "_atomic_write", crash)
+    with pytest.raises(RuntimeError, match="crash after usage"):
+        execute(profile, [bench_turn], tmp_path / "run")
+    monkeypatch.setattr(rollout, "_atomic_write", original)
+    event_runner(stdout=output("ses_second"))
+    execute(profile, [bench_turn], tmp_path / "run")
+    rows = [json.loads(line) for line in (profile.root / "usage.jsonl").read_text().splitlines()]
+    assert len(rows) == 2 and sum(row["tokens_in"] for row in rows) == 18
+    assert len({row["call_id"] for row in rows}) == 2
+    if with_session:
+        assert [row["call_id"] for row in rows] == [
+            "rollout:run:session:0:ses_first", "rollout:run:session:0:ses_second"]

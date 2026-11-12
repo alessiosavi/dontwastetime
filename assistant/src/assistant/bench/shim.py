@@ -5,9 +5,12 @@ import json
 import math
 import os
 from pathlib import Path
+import selectors
 import shlex
+import signal
 import subprocess
 import sys
+import time
 
 from assistant.notes_mcp import _atomic_write
 from assistant.opencode_env import _PARENT_KEYS, _azure_key
@@ -32,9 +35,9 @@ def prepare_harness2_root(p: Profile) -> Path:
     config_path = improver / "opencode.json"
     config = {
         **_base_config(p),
-        "permissions": [*_permissions("read", "glob", "grep", "list", "edit"), *(
-            {"action": "edit", "resource": resource, "effect": "deny"}
-            for resource in ("opencode.json", "opencode.jsonc", ".opencode/*")
+        "permissions": [*_permissions("read", "glob", "grep", "list"), *(
+            {"action": "edit", "resource": resource, "effect": "allow"}
+            for resource in ("context/harness/*", "output/answer.md")
         )],
     }
     _atomic_write(config_path, json.dumps(config, ensure_ascii=False, indent=2) + "\n")
@@ -43,7 +46,7 @@ def prepare_harness2_root(p: Profile) -> Path:
         "opencode_bin": p.settings.opencode_bin, "config": str(config_path),
         "directories": directories, "secrets_env": str(p.settings.secrets_env),
         "root": str(p.root), "profile": p.name, "model": p.settings.model,
-        "model_cost": p.settings.model_cost,
+        "model_cost": p.settings.model_cost, "timeout_seconds": 1750,
     }, ensure_ascii=False, indent=2) + "\n")
     bun = root / "dependencies/tools/node_modules/.bin/bun"
     bun.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -150,28 +153,101 @@ def main(argv: list[str] | None = None) -> int:
         config = json.loads(Path(argv[1]).read_text(encoding="utf-8"))
         command, cwd, model = _translate(argv[2:], config)
         env = _environment(config)
+        timeout = config.get("timeout_seconds", 1750)
+        if type(timeout) not in (int, float) or not math.isfinite(timeout) or not 0 < timeout < 1800:
+            raise ValueError("timeout_seconds deve essere positivo e inferiore a 1800.")
     except (OSError, ValueError, KeyError, TypeError) as error:
         print(f"Shim Harness²: {error}", file=sys.stderr)
         return 2
     at = datetime.now(timezone.utc)
     usage = _Usage()
-    with subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
-                          stdout=subprocess.PIPE) as process:
-        # stderr inherits the shim's descriptor: no decoding, buffering or pipe deadlock.
-        while chunk := process.stdout.read1(65_536):
+    process, interrupted, broken_pipe = None, 0, False
+    handlers = {}
+
+    def forward(number, frame):
+        nonlocal interrupted
+        interrupted = number
+        if process is not None:
+            try:
+                os.killpg(process.pid, number)
+            except ProcessLookupError:
+                pass
+
+    def relay(chunk):
+        nonlocal broken_pipe
+        usage.feed(chunk)
+        try:
             sys.stdout.buffer.write(chunk)
             sys.stdout.buffer.flush()
-            usage.feed(chunk)
-        usage.feed(b"", final=True)
-        code = process.wait()
-    if usage.session and usage.steps:
-        p = Profile(config["profile"], Path(config["root"]),
-                    Settings(model=config["model"], model_cost=config["model_cost"]))
+        except BrokenPipeError:
+            broken_pipe = True
+
+    try:
+        for number in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+            handlers[number] = signal.signal(number, forward)
+        process = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                                   stdout=subprocess.PIPE, start_new_session=True, bufsize=0)
+        # stderr inherits the shim's descriptor. Poll the pipe so a silent child
+        # cannot prevent enforcement of our deadline or signal cleanup.
+        deadline = time.monotonic() + timeout
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            while process.poll() is None:
+                if interrupted:
+                    code = 128 + interrupted
+                    # Give forwarded signals a bounded chance to run handlers.
+                    try:
+                        process.wait(timeout=0.2)
+                    except subprocess.TimeoutExpired:
+                        pass
+                    break
+                if broken_pipe:
+                    code = 128 + signal.SIGPIPE
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    code = 124
+                    break
+                for key, _ in selector.select(min(remaining, 0.1)):
+                    chunk = os.read(key.fd, 65_536)
+                    if chunk:
+                        relay(chunk)
+                    else:
+                        selector.unregister(key.fileobj)
+            else:
+                code = 128 + interrupted if interrupted else process.returncode
+    finally:
         try:
-            record_usage(p, f"improver:{usage.session}", at, model, usage.tokens_in, usage.tokens_out,
-                         usage.cost, tokens_cache_read=usage.tokens_cache_read)
-        except (OSError, ValueError, KeyError, TypeError) as error:
-            print(f"Shim Harness²: registrazione usage fallita ({type(error).__name__}).", file=sys.stderr)
+            if process is not None:
+                # Kill descendants even if the leader exited successfully or
+                # closed stdout. Reap our direct child on every exit path.
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.wait()
+                os.set_blocking(process.stdout.fileno(), False)
+                while True:
+                    try:
+                        chunk = os.read(process.stdout.fileno(), 65_536)
+                    except BlockingIOError:
+                        break
+                    if not chunk:
+                        break
+                    relay(chunk)
+                process.stdout.close()
+        finally:
+            usage.feed(b"", final=True)
+            if usage.session and usage.steps:
+                try:
+                    p = Profile(config["profile"], Path(config["root"]),
+                                Settings(model=config["model"], model_cost=config["model_cost"]))
+                    record_usage(p, f"improver:{usage.session}", at, model, usage.tokens_in, usage.tokens_out,
+                                 usage.cost, tokens_cache_read=usage.tokens_cache_read)
+                except (OSError, ValueError, KeyError, TypeError) as error:
+                    print(f"Shim Harness²: registrazione usage fallita ({type(error).__name__}).", file=sys.stderr)
+            for number, handler in handlers.items():
+                signal.signal(number, handler)
     return code
 
 

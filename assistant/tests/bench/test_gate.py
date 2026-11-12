@@ -82,6 +82,7 @@ def test_gate_rejects_mismatched_or_empty_cohorts(live, cand):
 def test_evaluate_raises_on_judge_none(profile, bench_turn, bench_snapshot, tmp_path, monkeypatch):
     from assistant.bench import gate, judge, rollout
 
+    (tmp_path / "done.json").write_text('{"failed": false}')
     monkeypatch.setattr(rollout, "execute_turns", lambda *a, **k: [
         RolloutTurn(bench_turn.turn_id, "risposta", [], tmp_path)])
     monkeypatch.setattr(judge, "judge_turn", lambda *a, **k: None)
@@ -126,7 +127,10 @@ def test_evaluate_parallel_order_latest_and_seed_arguments(profile, bench_turn, 
             active += 1
             maximum = max(maximum, active)
         barrier.wait(timeout=5)
-        return [RolloutTurn(batch[0].turn_id, "risposta", [], run_dir / rollout._turn_name(batch[0].turn_id))]
+        directory = run_dir / rollout._turn_name(batch[0].turn_id)
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "done.json").write_text('{"failed": false}')
+        return [RolloutTurn(batch[0].turn_id, "risposta", [], directory)]
 
     def evidence(turn, *, latest):
         assert latest.name == "dwt-20261112T100000Z.db"
@@ -154,3 +158,55 @@ def test_evaluate_rejects_invalid_jobs_before_work(profile, bench_turn, tmp_path
 
     with pytest.raises(ValueError):
         evaluate(profile, tmp_path, [bench_turn], tmp_path, jobs=0)
+
+
+@pytest.mark.parametrize("failure", ["exit", "timeout"])
+def test_evaluate_failed_rollout_is_incomplete(profile, bench_turn, bench_snapshot, tmp_path,
+                                               event_runner, monkeypatch, failure):
+    from assistant import opencode_env
+    from assistant.bench import gate
+    from pathlib import Path
+    import subprocess
+
+    event_runner(exit_code=7)
+    # The gate must reject the rollout before consulting even a valid judgment.
+    monkeypatch.setattr(gate.judge, "judge_turn", lambda p, turn, *a, **k: score(turn.turn_id))
+    if failure == "timeout":
+        def timeout(*args, **kwargs):
+            raise subprocess.TimeoutExpired("opencode", 600)
+        monkeypatch.setattr(opencode_env, "run_prompt", timeout)
+    harness = Path(__file__).resolve().parents[2] / "harness"
+    with pytest.raises(gate.EvaluationIncomplete):
+        gate.evaluate(profile, harness, [bench_turn], tmp_path / "run", jobs=1)
+
+
+def test_seed_bar_rejects_transport_failure_even_with_high_mean(profile, bench_turn, bench_snapshot,
+                                                               tmp_path, event_runner):
+    from assistant.bench import gate, judge, rollout
+    from pathlib import Path
+
+    event_runner(exit_code=7)
+    harness = Path(__file__).resolve().parents[2] / "harness"
+    result, = rollout.execute_turns(profile, harness, [bench_turn], tmp_path / "run")
+    failed = judge.judge_turn(profile, bench_turn, result, "")
+    # A partial rollout cannot become a finite zero that a cohort can average away.
+    assert failed is None
+
+
+def test_evaluate_reuses_frozen_evidence_after_new_snapshot(profile, bench_turn, bench_snapshot,
+                                                           tmp_path, event_runner, monkeypatch):
+    from assistant.bench import gate, judge
+    from pathlib import Path
+
+    event_runner()
+    seen = []
+    monkeypatch.setattr(judge, "evidence_for", lambda turn, *, latest: latest.name)
+    def grade(p, turn, result, evidence, **kwargs):
+        seen.append(evidence)
+        return score(turn.turn_id)
+    monkeypatch.setattr(judge, "judge_turn", grade)
+    harness = Path(__file__).resolve().parents[2] / "harness"
+    gate.evaluate(profile, harness, [bench_turn], tmp_path / "run", jobs=1)
+    shutil.copy2(bench_snapshot, bench_snapshot.with_name("dwt-20261112T100000Z.db"))
+    gate.evaluate(profile, harness, [bench_turn], tmp_path / "run", jobs=1)
+    assert seen == ["dwt-20261112T083000Z.db"] * 2

@@ -9,6 +9,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import uuid
 
 from assistant import opencode_env
 from assistant.bench.checks import RolloutTurn
@@ -33,7 +34,8 @@ def transcript(turn: Turn) -> str:
         "Messaggio di Operator:\n" + turn.message)
 
 
-def run_events(stdout: str | bytes | None) -> tuple[str, list[ToolCall], dict, bool]:
+def run_events(stdout: str | bytes | None, *, session_ids: set[str] | None = None
+               ) -> tuple[str, list[ToolCall], dict, bool]:
     """Parse 2.2.7 JSONL, retaining partial usage even after a failed run."""
     if isinstance(stdout, bytes):
         stdout = stdout.decode("utf-8", errors="replace")
@@ -46,6 +48,9 @@ def run_events(stdout: str | bytes | None) -> tuple[str, list[ToolCall], dict, b
         try:
             event = json.loads(line)
             kind, part = event["type"], event.get("part", {})
+            session = event.get("sessionID") or part.get("sessionID")
+            if session_ids is not None and isinstance(session, str) and session:
+                session_ids.add(session)
             if kind == "text":
                 text = part["text"]
                 if not isinstance(text, str):
@@ -136,9 +141,13 @@ def execute_turns(
             logger.warning("Rollout %s fallito (%s).", turn.turn_id, type(error).__name__)
         if isinstance(stdout, bytes):
             stdout = stdout.decode("utf-8", errors="replace")
-        reply, calls, usage, event_failure = run_events(stdout)
+        sessions = set()
+        reply, calls, usage, event_failure = run_events(stdout, session_ids=sessions)
         failed = failed or event_failure
-        record_usage(p, f"rollout:{run_dir.name}:{turn.turn_id}", at, p.settings.model, **usage)
+        # Cache identity stays stable; paid invocations do not. A transport
+        # failure may precede even the first event carrying a session id.
+        invocation = ",".join(sorted(sessions)) if sessions else uuid.uuid4().hex
+        record_usage(p, f"rollout:{run_dir.name}:{turn.turn_id}:{invocation}", at, p.settings.model, **usage)
         if failed:
             reply = ""
         _atomic_write(directory / "events.jsonl", stdout)

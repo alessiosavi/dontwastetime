@@ -60,6 +60,24 @@ def test_seed_db_preserves_source_snapshot_clock(profile, bench_snapshot):
     assert _snapshot_time(ensure_seed_snapshot(profile)) == expected
 
 
+def test_seed_cli_failed_rollout_fails_bar(profile, bench_turn, bench_snapshot, event_runner, monkeypatch, capsys):
+    from assistant import cli
+    from assistant.bench import seed
+
+    harness = Path(__file__).resolve().parents[2] / "harness"
+    shutil.copytree(harness, profile.root / "harness-live")
+    template = SeedTurn(bench_turn.turn_id, bench_turn.message, [], "snapshot", [], [], None, "train")
+    turn = SeededTurn(**vars(bench_turn), seed=template)
+    monkeypatch.setattr(seed, "load_seed_turns", lambda: [template])
+    monkeypatch.setattr(seed, "build_seed_turns", lambda p, snapshot: [turn])
+    event_runner(exit_code=7)
+    assert cli.main(["bench", "seed", "--state-root", str(profile.root.parents[1]), "--jobs", "1"]) == 1
+    output = capsys.readouterr().out
+    assert output.startswith("FAIL ")
+    report, = (profile.bench_dir / "seed-runs").glob("*/report.md")
+    assert "incompleta" in report.read_text()
+
+
 @pytest.mark.parametrize("split", ["all", "train", "holdout"])
 @pytest.mark.parametrize("outcome", ["pass", "fail", "incomplete"])
 def test_seed_cli_dispatch_report_and_exit(profile, bench_turn, bench_snapshot, monkeypatch, capsys, split, outcome):

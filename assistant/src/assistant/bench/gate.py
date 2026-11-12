@@ -2,16 +2,17 @@
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+import json
 import math
 from pathlib import Path
 
 from assistant.bench import judge, rollout
+from assistant.bench.evidence import freeze_evidence, require_evidence
 from assistant.bench.judge import RUBRIC_DIMENSIONS, TurnScore
 from assistant.bench.seed import SeedTurn
 from assistant.h2 import harness2
 from assistant.profile import Profile
 from assistant.sessions import Turn
-from assistant.snapshot import _snapshots
 
 
 class EvaluationIncomplete(RuntimeError):
@@ -76,6 +77,7 @@ def seed_bar(scores: list[TurnScore]) -> bool:
 def evaluate(
     p: Profile, tree_dir: Path, turns: list[Turn], run_dir: Path, *,
     seeds: dict[str, SeedTurn] | None = None, seed_snapshot: Path | None = None, jobs: int = 4,
+    frozen_evidence: dict[str, str] | None = None,
 ) -> list[TurnScore]:
     """Replay and grade at most jobs turns at once, returning input order.
 
@@ -92,11 +94,12 @@ def evaluate(
         raise EvaluationIncomplete("Identificativi dei turni non validi.") from error
     if len(set(names)) != len(names):
         raise EvaluationIncomplete("Identificativi dei turni duplicati o in conflitto.")
-    snapshots = _snapshots(p)
-    if not snapshots:
-        raise EvaluationIncomplete("Nessuna snapshot disponibile per le reazioni di Operator.")
-    latest = snapshots[-1][1]
     tree_dir, run_dir = tree_dir.resolve(), run_dir.resolve()
+    try:
+        evidence = (freeze_evidence(p, turns, run_dir / "evidence.json") if frozen_evidence is None
+                    else require_evidence(turns, frozen_evidence))
+    except (OSError, ValueError, TypeError) as error:
+        raise EvaluationIncomplete("Reazioni congelate non disponibili.") from error
     # Harness²'s first import temporarily changes the process cwd. Finish that
     # single-threaded initialization before any worker starts rendering.
     harness2()
@@ -107,8 +110,10 @@ def evaluate(
                                             seeds=seeds, seed_snapshot=seed_snapshot)
             if len(results) != 1 or results[0].turn_id != turn.turn_id:
                 raise EvaluationIncomplete(f"Rollout mancante per {turn.turn_id}.")
-            evidence = judge.evidence_for(turn, latest=latest)
-            score = judge.judge_turn(p, turn, results[0], evidence, seed=(seeds or {}).get(turn.turn_id))
+            done = json.loads((results[0].run_dir / "done.json").read_text(encoding="utf-8"))
+            if done.get("failed"):
+                raise EvaluationIncomplete(f"Rollout fallito per {turn.turn_id}.")
+            score = judge.judge_turn(p, turn, results[0], evidence[turn.turn_id], seed=(seeds or {}).get(turn.turn_id))
             if score is None or score.turn_id != turn.turn_id:
                 raise EvaluationIncomplete(f"Giudizio mancante per {turn.turn_id}.")
             _cohort([score])

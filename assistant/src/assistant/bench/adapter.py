@@ -7,20 +7,22 @@ from pathlib import Path
 
 from assistant.bench import judge, rollout
 from assistant.bench.checks import RolloutTurn
+from assistant.bench.evidence import freeze_evidence, require_evidence
 from assistant.bench.seed import SeedTurn
 from assistant.h2 import harness2
 from assistant import harness_rules
 from assistant.notes_mcp import _atomic_write
 from assistant.profile import Profile
 from assistant.sessions import ToolCall, Turn
-from assistant.snapshot import _snapshots, snapshot_before
+from assistant.snapshot import snapshot_before
 
 
 class OperatorAdapter:
     def __init__(self, p: Profile, batch: list[Turn], seeds: dict[str, SeedTurn], *, batch_id: str,
-                 seed_snapshot: Path | None = None):
+                 seed_snapshot: Path | None = None, frozen_evidence: dict[str, str] | None = None):
         self.p, self.batch, self.seeds, self.batch_id = p, list(batch), dict(seeds), batch_id
         self.seed_snapshot = seed_snapshot
+        self.frozen_evidence = None if frozen_evidence is None else require_evidence(batch, frozen_evidence)
         names = [rollout._turn_name(turn.turn_id) for turn in batch]
         if len(set(names)) != len(names):
             raise ValueError("Identificativi dei turni in conflitto dopo la normalizzazione.")
@@ -58,19 +60,19 @@ class OperatorAdapter:
         self._task(task_id)
         return "\n\n".join(f"## Turno {turn.turn_id}\n\n{rollout.transcript(turn)}" for turn in self.batch)
 
-    def _latest(self) -> Path:
-        snapshots = _snapshots(self.p)
-        if not snapshots:
-            raise FileNotFoundError("Nessuna snapshot disponibile per le reazioni di Operator.")
-        return snapshots[-1][1]
+    @cached_property
+    def _evidence(self) -> dict[str, str]:
+        if self.frozen_evidence is not None:
+            return self.frozen_evidence
+        key = hashlib.sha256(self.batch_id.encode()).hexdigest()
+        return freeze_evidence(self.p, self.batch, self.p.bench_dir / "batches" / key / "evidence.json")
 
     def task_files(self, task_id: str) -> Path | None:
         self._task(task_id)
-        latest = self._latest()
         key = hashlib.sha256(self.batch_id.encode()).hexdigest()
         directory = self.p.bench_dir / "batches" / key / "evidence"
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-        text = "\n\n".join(f"## Turno {turn.turn_id}\n\n{judge.evidence_for(turn, latest=latest)}"
+        text = "\n\n".join(f"## Turno {turn.turn_id}\n\n{self._evidence[turn.turn_id]}"
                            for turn in self.batch)
         _atomic_write(directory / "reazioni.md", text + "\n")
         return directory
@@ -79,6 +81,7 @@ class OperatorAdapter:
         self, task_id: str, harness_dir: Path | None, run_id: str, *, timeout: int | None = None,
     ) -> Path:
         self._task(task_id)
+        self._evidence  # Freeze before the first paid rollout, including standalone adapter callers.
         root = self.spec.runs_root.resolve()
         directory = (root / run_id).resolve()
         if directory == root or not directory.is_relative_to(root):
@@ -135,12 +138,12 @@ class OperatorAdapter:
                 calls = json.loads((directory / "tool_calls.json").read_text(encoding="utf-8"))
                 results.append(RolloutTurn(turn.turn_id, (directory / "reply.md").read_text(encoding="utf-8"),
                                            [ToolCall(**call) for call in calls], directory))
-            latest = self._latest()
+            evidence = self._evidence
         except (OSError, ValueError, TypeError):
             return None
         scores = []
         for turn, result in zip(self.batch, results, strict=True):
-            score = judge.judge_turn(self.p, turn, result, judge.evidence_for(turn, latest=latest),
+            score = judge.judge_turn(self.p, turn, result, evidence[turn.turn_id],
                                      seed=self.seeds.get(turn.turn_id))
             if score is None:
                 return None

@@ -5,7 +5,10 @@ import fnmatch
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
+import sys
+import time
 
 import pytest
 
@@ -88,10 +91,10 @@ def test_improver_config_denies_shell_web_mcp_and_config_edits(profile):
     assert config["providers"] == live["providers"]
     assert config["model"] == live["model"]
     assert config["permissions"][0] == {"action": "*", "resource": "*", "effect": "deny"}
-    assert config["permissions"][1:7] == [
+    assert config["permissions"][1:5] == [
         {"action": action, "resource": "*", "effect": "allow"}
-        for action in ("read", "glob", "grep", "list", "edit")
-    ] + [{"action": "edit", "resource": "opencode.json", "effect": "deny"}]
+        for action in ("read", "glob", "grep", "list")
+    ]
 
     # Q3: config rules follow built-ins; the last matching rule wins.
     def permission(action, resource):
@@ -104,8 +107,13 @@ def test_improver_config_denies_shell_web_mcp_and_config_edits(profile):
         assert permission(action, "*") == "deny"
     for action in ("read", "glob", "grep", "list", "edit"):
         assert permission(action, "context/harness/systemprompt.md") == "allow"
-    for file in ("opencode.json", "opencode.jsonc", ".opencode/agent/x.md", ".opencode/opencode.json"):
+    assert permission("edit", "output/answer.md") == "allow"
+    for file in ("OPENCODE.JSON", "opencode.json", "opencode.jsonc", ".opencode/x",
+                 ".opencode/agent/x.md", ".opencode/opencode.json", "../x", "/abs",
+                 "Context/harness/systemprompt.md", "output/other.md", "MISSION.md"):
         assert permission("edit", file) == "deny"
+        assert not any(rule["effect"] == "allow" and fnmatch.fnmatchcase("edit", rule["action"])
+                       and fnmatch.fnmatchcase(file, rule["resource"]) for rule in config["permissions"])
 
 
 @pytest.mark.parametrize("reported_cost, expected_cost", [(0, 0.000045), (0.25, 0.5), (None, None)])
@@ -169,3 +177,86 @@ def test_shim_rejects_unknown_argv(profile, tmp_path, fake_opencode, argv):
     assert result.returncode == 2
     assert b"argv" in result.stderr
     assert not fake_opencode.record.exists()
+
+
+@pytest.mark.parametrize("stop", ["timeout", "closed_stdout", "exit", signal.SIGTERM, signal.SIGINT, signal.SIGHUP])
+def test_shim_supervises_hanging_process_group_and_partial_usage(profile, tmp_path, fake_opencode, stop):
+    from assistant.bench.shim import prepare_harness2_root
+
+    root = prepare_harness2_root(profile)
+    config_path = root / "shim.json"
+    config = json.loads(config_path.read_text())
+    config["timeout_seconds"] = 10 if isinstance(stop, int) else 1
+    config_path.write_text(json.dumps(config))
+    fake_opencode.path.write_text(f'''#!{sys.executable}
+import json, os, pathlib, signal, subprocess, sys, time
+root = pathlib.Path({str(tmp_path)!r})
+role = "descendant" if "descendant" in sys.argv else "parent"
+def received(number, frame):
+    with (root / "signals.jsonl").open("a") as out:
+        out.write(json.dumps([role, number]) + "\\n")
+for number in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+    signal.signal(number, received)
+(root / (role + ".pid")).write_text(str(os.getpid()))
+if role == "parent":
+    subprocess.Popen([sys.executable, __file__, "descendant"])
+    while not (root / "descendant.pid").exists(): time.sleep(0.01)
+    print(json.dumps({{"type": "step_finish", "sessionID": "ses_hang", "part": {{
+        "id": "paid", "tokens": {{"input": 19, "output": 7, "cache": {{"read": 3}}}}, "cost": 0.2
+    }}}}), flush=True)
+    (root / "ready").touch()
+    if {str(stop)!r} == "exit": sys.exit(0)
+if {str(stop)!r} == "closed_stdout":
+    os.close(1)
+    os.close(2)
+while True: time.sleep(1)
+''')
+    cwd = tmp_path / "proposer"
+    cwd.mkdir()
+    env = dict(os.environ, XDG_DATA_HOME=str(cwd / ".ocdata"), XDG_STATE_HOME=str(cwd / ".ocstate"))
+    process = subprocess.Popen([str(root / "dependencies/tools/node_modules/.bin/bun"),
+                               *bun_args(root, cwd, profile.settings.model)],
+                              cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        deadline = time.monotonic() + 5
+        while not (tmp_path / "ready").exists():
+            assert process.poll() is None, process.communicate()
+            assert time.monotonic() < deadline, "fake OpenCode did not start"
+            time.sleep(0.01)
+        if isinstance(stop, int):
+            process.send_signal(stop)
+        try:
+            stdout, stderr = process.communicate(timeout=3)
+        except subprocess.TimeoutExpired:
+            pytest.fail("shim did not enforce its own deadline")
+        expected = 128 + stop if isinstance(stop, int) else 0 if stop == "exit" else 124
+        assert process.returncode == expected, stderr
+        assert json.loads(stdout)["sessionID"] == "ses_hang"
+        usage = json.loads((profile.root / "usage.jsonl").read_text())
+        assert usage["call_id"] == "improver:ses_hang"
+        assert (usage["tokens_in"], usage["tokens_out"], usage["tokens_cache_read"]) == (19, 7, 3)
+        if isinstance(stop, int):
+            received = [json.loads(line) for line in (tmp_path / "signals.jsonl").read_text().splitlines()]
+            assert ["parent", stop] in received and ["descendant", stop] in received
+        for role in ("parent", "descendant"):
+            pid = int((tmp_path / (role + ".pid")).read_text())
+            deadline = time.monotonic() + 2
+            while True:
+                try:
+                    os.kill(pid, 0)
+                except ProcessLookupError:
+                    break
+                assert time.monotonic() < deadline, f"{role} survived shim cleanup"
+                time.sleep(0.01)
+    finally:
+        # The regression must also clean up children of the unfixed shim.
+        for role in ("parent", "descendant"):
+            path = tmp_path / (role + ".pid")
+            if path.exists():
+                try:
+                    os.kill(int(path.read_text()), signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        if process.poll() is None:
+            process.kill()
+        process.communicate(timeout=5)
