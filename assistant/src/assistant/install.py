@@ -1,6 +1,6 @@
 """Install a private assistant profile without changing dwt's live files."""
 
-from contextlib import closing
+from contextlib import closing, suppress
 from copy import deepcopy
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
@@ -178,6 +178,14 @@ def _bootout(p: Profile) -> None:
     )
 
 
+def _job_loaded(p: Profile) -> bool:
+    return subprocess.run(
+        ["launchctl", "print", f"gui/{os.getuid()}/{_label(p)}"],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        check=False,
+    ).returncode == 0
+
+
 def _backup(source: Path, dest: Path) -> None:
     """Use SQLite's online backup API; never query or write the source DB."""
     # Keep the destination inode and let SQLite transact against any existing
@@ -209,12 +217,19 @@ def install(
     p = load_profile(profile, state_root if state_root is not None else live_state)
     if ui_active(p):
         raise RuntimeError("Chiudi l'assistente prima di aggiornarlo.")
-    # Keep workers out until all installation work (including bootstrap) finishes.
-    with (p.root / "improve.lock").open("a", encoding="utf-8") as improve_lock:
+    # Keep workers and UI launches out through the final bootstrap.
+    with (
+        (p.root / "improve.lock").open("a", encoding="utf-8") as improve_lock,
+        (p.root / "ui.lock").open("a", encoding="utf-8") as ui_lock,
+    ):
         try:
             fcntl.flock(improve_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise RuntimeError("Attendi la fine del miglioramento prima di aggiornarlo.") from None
+        try:
+            fcntl.flock(ui_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RuntimeError("Chiudi l'assistente prima di aggiornarlo.") from None
         if p.name == "dev" and not _valid_email(dev_recipient):
             raise ValueError("Il profilo dev richiede --dev-recipient con un indirizzo email valido.")
         key = os.environ.get("AZURE_API_KEY", "")
@@ -272,6 +287,8 @@ def install(
             if not (repo / "taxonomy.json").is_file():
                 raise FileNotFoundError("taxonomy.json non trovato nel repository.")
 
+        tree = load_tree(repo / "assistant/harness")
+        validate_tree(tree)
         settings = replace(
             p.settings, opencode_bin=str(Path(opencode).absolute()), dwt_bin=str(dwt),
             dwt_config=dev_dir / "config.json" if p.name == "dev" else live_config,
@@ -281,51 +298,84 @@ def install(
         )
         p = replace(p, settings=settings)
         warn_opencode_version(settings.opencode_bin)
-        # Drain the current tick and unload its job before replacing its interpreter.
-        with (p.root / "tick.lock").open("a", encoding="utf-8") as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            try:
-                _bootout(p)
-            finally:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
-        subprocess.run([uv, "venv", "--clear", "--python", "3.13", str(p.root / "venv")], check=True)
-        subprocess.run([
-            uv, "pip", "install", "--python", str(p.root / "venv/bin/python"), str(repo / "assistant"),
-        ], check=True)
-        _atomic_write(p.root / "settings.json", json.dumps(asdict(settings), default=str, indent=2) + "\n")
-        _atomic_write(settings.secrets_env, f"AZURE_API_KEY={key}\n")
-        harness = p.root / "harness-live"
-        from assistant.bench.improve import fingerprint, record_promoted_install
+        staged_venv = p.root / "venv.new"
+        was_loaded = False
+        plist = _plist_path(p)
+        try:
+            # Dependency resolution can fail: leave the current interpreter and job running.
+            subprocess.run([
+                uv, "venv", "--clear", "--relocatable", "--python", "3.13", str(staged_venv),
+            ], check=True)
+            subprocess.run([
+                uv, "pip", "install", "--python", str(staged_venv / "bin/python"), str(repo / "assistant"),
+            ], check=True)
+            # Drain the tick, then exclude all ticks until the new install is ready.
+            with (p.root / "tick.lock").open("a", encoding="utf-8") as lock:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+                was_loaded = _job_loaded(p)
+                if was_loaded:
+                    _bootout(p)
+                    if _job_loaded(p):
+                        raise RuntimeError("Impossibile fermare il job launchd prima dell'aggiornamento.")
+                venv = p.root / "venv"
+                old_venv = p.root / "venv.old"
+                if venv.exists():
+                    # A previous swap may have left its backup behind.
+                    if old_venv.is_symlink() or old_venv.is_file():
+                        old_venv.unlink()
+                    else:
+                        shutil.rmtree(old_venv, ignore_errors=True)
+                    venv.rename(old_venv)
+                try:
+                    staged_venv.rename(venv)
+                except OSError:
+                    # Keep the old interpreter usable if the second rename fails.
+                    with suppress(OSError):
+                        if old_venv.exists():
+                            old_venv.rename(venv)
+                    raise
+                if old_venv.exists():
+                    shutil.rmtree(old_venv)
+                _atomic_write(p.root / "settings.json", json.dumps(asdict(settings), default=str, indent=2) + "\n")
+                _atomic_write(settings.secrets_env, f"AZURE_API_KEY={key}\n")
+                harness = p.root / "harness-live"
+                from assistant.bench.improve import fingerprint, record_promoted_install
 
-        tree = load_tree(repo / "assistant/harness")
-        validate_tree(tree)
-        previous_harness = fingerprint(harness) if harness.is_dir() else None
-        if harness.exists():
-            shutil.rmtree(harness)
-        harness.mkdir(mode=0o700, parents=True)
-        for name, text in tree.items():
-            _atomic_write(harness / name, text)
-        if p.name == "dev":
-            dev_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-            _backup(live_db, dev_dir / "dwt.db")
-            config.update(state_dir=str(dev_dir), digest_recipients=[dev_recipient], alert_recipients=[dev_recipient])
-            _atomic_write(settings.dwt_config, json.dumps(config, indent=2) + "\n")
-            _atomic_write(dev_dir / "taxonomy.json", (repo / "taxonomy.json").read_text(encoding="utf-8"))
-        render_workspace(p, harness)
-        record_promoted_install(p, previous_harness, now)
-        script = launcher_script(p)
-        _atomic_write(p.root / "Assistente.command", script, 0o755)
-        if desktop_launcher:
-            _atomic_write(Path.home() / "Desktop/Assistente.command", script, 0o755)
-        markers = load_markers(p)
-        if markers.installed_at is None:
-            markers.installed_at = now
-            save_markers(p, markers)
-        if not no_launchd:
-            p.logs_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-            plist = _plist_path(p)
-            _atomic_write(plist, launchd_plist(p))
-            subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist)], check=True)
+                previous_harness = fingerprint(harness) if harness.is_dir() else None
+                if harness.exists():
+                    shutil.rmtree(harness)
+                harness.mkdir(mode=0o700, parents=True)
+                for name, text in tree.items():
+                    _atomic_write(harness / name, text)
+                if p.name == "dev":
+                    dev_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+                    _backup(live_db, dev_dir / "dwt.db")
+                    config.update(state_dir=str(dev_dir), digest_recipients=[dev_recipient], alert_recipients=[dev_recipient])
+                    _atomic_write(settings.dwt_config, json.dumps(config, indent=2) + "\n")
+                    _atomic_write(dev_dir / "taxonomy.json", (repo / "taxonomy.json").read_text(encoding="utf-8"))
+                render_workspace(p, harness)
+                record_promoted_install(p, previous_harness, now)
+                script = launcher_script(p)
+                _atomic_write(p.root / "Assistente.command", script, 0o755)
+                if desktop_launcher:
+                    _atomic_write(Path.home() / "Desktop/Assistente.command", script, 0o755)
+                markers = load_markers(p)
+                if markers.installed_at is None:
+                    markers.installed_at = now
+                    save_markers(p, markers)
+            # RunAtLoad needs tick.lock available when bootstrap starts the new job.
+            if not no_launchd:
+                p.logs_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+                _atomic_write(plist, launchd_plist(p))
+            if not no_launchd or was_loaded:
+                subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist)], check=True)
+        except Exception:
+            if was_loaded and plist.is_file():
+                with suppress(OSError, subprocess.SubprocessError):
+                    subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist)], check=True)
+            raise
+        finally:
+            shutil.rmtree(staged_venv, ignore_errors=True)
         return p
 
 
