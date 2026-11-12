@@ -2,7 +2,6 @@
 
 from pathlib import Path
 import re
-import sys
 
 from assistant.h2 import harness2
 
@@ -33,8 +32,7 @@ _ALLOWED_FILES = frozenset({
 _SKILL_PATH = re.compile(r"skills/[a-z0-9-]+/SKILL\.md")
 
 # Do not initialize Harness² here: the worker configures it after taking its lock.
-_surface = getattr(sys.modules.get("harness2.substrate.opencode"), "OPENCODE_SURFACE", None)
-HARNESS2_STUB_PATHS = frozenset(path for path, _ in getattr(_surface, "stubs", ())) or frozenset({
+HARNESS2_STUB_PATHS = frozenset({
     "plugin/README.md",
     "scripts/README.md",
     "skills/README.md",

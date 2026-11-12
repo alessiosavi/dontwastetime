@@ -22,7 +22,7 @@ from assistant.markers import load_markers, save_markers
 from assistant.notes_mcp import _require_aware
 from assistant.profile import Profile, _read_object
 from assistant.sessions import TRIAGE_TOOLS, ToolCall, Turn, turns_from_export
-from assistant.snapshot import snapshot_before
+from assistant.snapshot import _snapshots, snapshot_before, take_snapshot
 from assistant.spend import ROME, spend_between
 
 
@@ -270,6 +270,8 @@ def run_improvement(p: Profile, now: datetime, *, max_batch: int = 25, max_regre
     else:
         real = _real_turns(p)
         snapshot = ensure_seed_snapshot(p)
+        if not _snapshots(p):
+            take_snapshot(p, now)
         seeds = build_seed_turns(p, snapshot)
         splits = assign_splits(p, [*real, *seeds])
         used = {identifier for path in (p.bench_dir / "runs").glob("*/run.json")
