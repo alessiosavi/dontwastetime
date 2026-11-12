@@ -103,7 +103,7 @@ sign-off. Re-run `explore` monthly for the first three months, or whenever
 | `dwt mute-thread <id\|key>` | Stop tracking a thread, including future inbound mail, until reopened. |
 | `dwt reopen <id\|key>` | Clear handled, snooze and mute, then recompute the reply obligation. |
 | `dwt doctor` | Config, credential, per-mailbox access, queue, dead-letters, budget, unsure share, disk. Exits non-zero on any red item. |
-| `dwt mcp --operator <name>` | Serve agent read and triage tools over stdio, without starting pollers or workers. |
+| `dwt mcp --operator <name> [--now <RFC3339>]` | Serve agent read and triage tools over stdio, without starting pollers or workers. `--now` fixes the clock, for replays on a database copy. |
 
 Every command accepts `--config`, `--state-dir`, `--env` and `--taxonomy`
 (`.env` and `taxonomy.json` default to the config file's directory).

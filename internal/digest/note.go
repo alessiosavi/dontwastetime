@@ -24,7 +24,7 @@ var ErrNoteNotSent = errors.New("note: definitely not sent")
 type Note struct{ To, Subject, Text string }
 
 var noteTmpl = template.Must(template.New("note").Parse(`<!doctype html>
-<html lang="it"><body style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:14px">
+<html lang="it"><head><meta charset="utf-8"></head><body style="font-family:-apple-system,Segoe UI,Helvetica,Arial,sans-serif;font-size:14px">
 <div style="white-space:pre-wrap">{{.}}</div>
 </body></html>`))
 

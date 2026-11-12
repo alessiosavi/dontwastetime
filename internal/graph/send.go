@@ -12,11 +12,11 @@ import (
 // ErrDeliveryUnknown means the sendMail request may have reached Graph but
 // delivery cannot be confirmed (no answer or an unexpected success status):
 // the mail may have been delivered, so a retry could send it twice.
-var ErrDeliveryUnknown = errors.New("graph: sendMail got no answer; the mail may have been delivered")
+var ErrDeliveryUnknown = errors.New("graph: sendMail delivery not confirmed; the mail may have been delivered")
 
 // SendMail sends one HTML mail from sender's mailbox. It is the only write dwt
-// performs (digest and P0 alerts). Graph answers 202 Accepted; any other
-// answer is an error.
+// performs (digest, P0 alerts and send-note). Graph answers 202 Accepted; no
+// answer or another 2xx wraps ErrDeliveryUnknown, any other answer is an error.
 func (c *Client) SendMail(ctx context.Context, sender string, to []string, subject, html string, saveToSentItems bool) error {
 	if sender == "" || len(to) == 0 {
 		return errors.New("graph: sendMail needs a sender and at least one recipient")
