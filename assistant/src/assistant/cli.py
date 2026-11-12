@@ -90,8 +90,11 @@ def main(argv=None) -> int:
             print(f"Bozza della scheda di tono da rivedere: {path}")
         elif args.command == "recap":
             from assistant.locks import tick_lock
+            from assistant.markers import load_markers
+            from assistant.sessions import export_new_sessions
             from assistant.recap import (
-                DwtClient, build_recap, deliver_recap, recap_period_start, summarize_with_agent, write_recap,
+                DwtClient, ROME, build_recap, deliver_recap, recap_period_start, reconcile_claim,
+                summarize_with_agent, write_recap,
             )
 
             p = load_profile(args.profile, args.state_root)
@@ -100,6 +103,11 @@ def main(argv=None) -> int:
                     print("Un altro processo dell'assistente è in corso; riprova tra poco.", file=sys.stderr)
                     return 1
                 now = datetime.now(timezone.utc)
+                reconcile_claim(p, now)
+                if load_markers(p).recap_claim == f"recap:{now.astimezone(ROME).date().isoformat()}":
+                    print("Recap già preso in carico oggi.")
+                    return 0
+                export_new_sessions(p)
                 with DwtClient(p, now=now) as client:
                     recap = build_recap(p, recap_period_start(p, now), now, client=client,
                                         summarize=summarize_with_agent(p))

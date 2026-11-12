@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from itertools import islice
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -12,7 +13,7 @@ from typing import Literal
 from uuid import uuid4
 
 from assistant.dwt_client import DwtClient, DwtError
-from assistant.install import _atomic_write
+from assistant.install import _atomic_write, installation_time
 from assistant.markers import load_markers, save_markers
 from assistant.notes_mcp import NotesStore, ROME, _require_aware
 from assistant.opencode_env import run_prompt
@@ -28,6 +29,7 @@ _MONTHS = ("gennaio", "febbraio", "marzo", "aprile", "maggio", "giugno", "luglio
            "agosto", "settembre", "ottobre", "novembre", "dicembre")
 Delivery = Literal["sent", "unknown", "failed", "skipped"]
 _TRANSCRIPT_LIMIT = 60_000
+_RECAP_BYTES_LIMIT = 60_000
 
 
 @dataclass(frozen=True)
@@ -142,7 +144,17 @@ def _reply(item: dict) -> str:
 
 
 def _section(title: str, bullets: list[str]) -> str:
-    return title + "\n" + "\n".join(f"- {bullet}" for bullet in (bullets or ["niente"]))
+    return title + "\n" + "\n".join(
+        f"- {bullet if len(bullet) <= 300 else bullet[:299] + '…'}" for bullet in (bullets or ["niente"])
+    )
+
+
+def _bounded_text(text: str) -> str:
+    encoded = text.encode("utf-8")
+    if len(encoded) <= _RECAP_BYTES_LIMIT:
+        return text
+    suffix = "\n…(testo accorciato)\n"
+    return encoded[:_RECAP_BYTES_LIMIT - len(suffix.encode("utf-8"))].decode("utf-8", errors="ignore").rstrip() + suffix
 
 
 def build_recap(
@@ -156,8 +168,9 @@ def build_recap(
     turns = []
     for path in sorted(p.exports_dir.glob("*.json")):
         if path.name != "index.json":
-            turns.extend(turn for turn in turns_from_export(path, p.name) if period_start <= turn.at < now)
-    turns.sort(key=lambda turn: (turn.at, turn.session_id, turn.index))
+            turns.extend(turn for turn in turns_from_export(path, p.name)
+                         if turn.completed_at is not None and period_start <= turn.completed_at < now)
+    turns.sort(key=lambda turn: (turn.completed_at, turn.session_id, turn.index))
     notes = [note for note in NotesStore(p.memory_dir).added_since(period_start) if note.at < now]
     replies = _open_replies(client)
     oldest = _oldest_sync(client)
@@ -186,9 +199,10 @@ def build_recap(
     preamble = "\n".join(blocks)
     sections = []
     if activity:
+        actions = [_action(call) for turn in turns for call in turn.tool_calls
+                   if call.server == "dwt" and call.tool in TRIAGE_TOOLS and call.ok]
         sections.extend([
-            _section("Fatto", [_action(call) for turn in turns for call in turn.tool_calls
-                               if call.server == "dwt" and call.tool in TRIAGE_TOOLS and call.ok]),
+            _section("Fatto", actions[:40] + ([f"e altre {len(actions) - 40} azioni"] if len(actions) > 40 else [])),
             _section("Ancora aperto", [_reply(item) for item in replies[:5]]
                      + ([f"e altre {len(replies) - 5}"] if len(replies) > 5 else [])),
             _section("Mi hai chiesto di ricordare", [f"«{note.text}» (#{note.id})" for note in notes]),
@@ -197,7 +211,7 @@ def build_recap(
     day = now.astimezone(ROME).date()
     return Recap(
         f"Recap assistente — {_italian_date(day)}",
-        "\n\n".join(([preamble] if preamble else []) + sections) + "\n",
+        _bounded_text("\n\n".join(([preamble] if preamble else []) + sections) + "\n"),
         period_start, now, activity, stale, tuple(event.key for event in events),
     )
 
@@ -303,8 +317,9 @@ def write_recap(p: Profile, recap: Recap, now: datetime) -> Path:
     """Also used by dry-run: neither claims nor delivery are touched here."""
     _require_aware(now)
     path = p.memory_dir / "recap" / f"{now.astimezone(ROME).date().isoformat()}.md"
-    _atomic_write(path, recap.text)
-    latest = recap.text if len(recap.text) <= 3000 else recap.text[:2999] + "…"
+    text = _bounded_text(recap.text)
+    _atomic_write(path, text)
+    latest = text if len(text) <= 3000 else text[:2999] + "…"
     _atomic_write(path.parent / "latest.md", latest)
     return path
 
@@ -314,6 +329,20 @@ def _log(p: Profile, now: datetime, outcome: Delivery, reason: str) -> Delivery:
     with (p.logs_dir / "recap.log").open("a", encoding="utf-8") as log:
         log.write(json.dumps({"at": now.isoformat(), "outcome": outcome, "reason": reason}) + "\n")
     return outcome
+
+
+def reconcile_claim(p: Profile, now: datetime) -> None:
+    """Close an uncertain frozen period under tick_lock, preserving its claim."""
+    _require_aware(now)
+    markers = load_markers(p)
+    if (markers.recap_claim and markers.recap_claim_end is not None
+            and (markers.last_recap_end is None or markers.last_recap_end < markers.recap_claim_end)):
+        day = date.fromisoformat(markers.recap_claim.removeprefix("recap:"))
+        markers.last_recap_end = markers.recap_claim_end
+        markers.last_recap_day = day
+        record_status(p, f"recap_unknown:{day.isoformat()}",
+                      f"Il recap del {_italian_date(day)} potrebbe non essere arrivato: controlla la posta.", now)
+        save_markers(p, markers)
 
 
 def deliver_recap(p: Profile, recap: Recap, now: datetime) -> Delivery:
@@ -343,9 +372,10 @@ def deliver_recap(p: Profile, recap: Recap, now: datetime) -> Delivery:
     try:
         result = subprocess.run([
             p.settings.dwt_bin, "send-note", "--config", str(p.settings.dwt_config),
-            "--env", str(p.settings.dwt_env), "--to", recipients[0],
+            "--env", str(p.settings.dwt_env), "--state-dir", str(p.dwt_state_dir), "--to", recipients[0],
             "--subject", recap.subject, "--file", str(path),
-        ], timeout=120, stdin=subprocess.DEVNULL, capture_output=True)
+        ], env={key: os.environ[key] for key in ("PATH", "HOME", "LANG") if key in os.environ},
+            timeout=120, stdin=subprocess.DEVNULL, capture_output=True)
         code = result.returncode
         reason = f"exit:{code}"
     except OSError as error:
@@ -369,13 +399,7 @@ def deliver_recap(p: Profile, recap: Recap, now: datetime) -> Delivery:
 def recap_period_start(p: Profile, now: datetime) -> datetime:
     """Use the last sent boundary; before the first recap use install creation.
 
-    Existing installs have no install-time marker. The settings file's birth
-    time is stable across in-place edits; on platforms without it use mtime.
-    Task 11 can pass its own install boundary directly to build_recap.
+    Older installs use the settings file's birth time, or mtime if unavailable.
     """
     markers = load_markers(p)
-    if markers.last_recap_end is not None:
-        return markers.last_recap_end
-    path = p.root / "settings.json"
-    stat = (path if path.exists() else p.root).stat()
-    return min(now, datetime.fromtimestamp(getattr(stat, "st_birthtime", stat.st_mtime), timezone.utc))
+    return markers.last_recap_end or markers.installed_at or installation_time(p, now)

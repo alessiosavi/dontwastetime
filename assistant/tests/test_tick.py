@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 import fcntl
 import json
 import os
+from pathlib import Path
 import subprocess
 import sys
 from types import SimpleNamespace
@@ -69,6 +70,7 @@ def jobs(profile, monkeypatch):
 def test_recap_due_first_tick_after_nine_when_asleep(profile, jobs):
     runtime = jobs.runtime
     first = at("2026-11-12T08:55")
+    save_markers(profile, Markers(installed_at=first))
     assert "recap" not in runtime.tick(profile, first)
     assert load_markers(profile).installed_at == first
     assert "recap" in runtime.tick(profile, at("2026-11-12T11:40"))
@@ -82,7 +84,7 @@ def test_recap_due_once_per_day(profile, jobs):
     jobs.runtime.tick(profile, at("2026-11-12T09:15"))
     jobs.runtime.tick(profile, at("2026-11-12T23:59"))
     assert len(jobs.sends) == 1
-    assert len(jobs.exports) == 3
+    assert len(jobs.exports) == 4  # Daily recap refreshes exports before building.
 
 
 def test_recap_weekend_gap_one_recap_monday(profile, jobs):
@@ -168,10 +170,42 @@ def test_failed_job_does_not_block_others(profile, jobs, monkeypatch, capsys):
 
     monkeypatch.setattr(jobs.runtime, "export_new_sessions", fail)
     now = at("2026-11-12T11:00")
-    assert jobs.runtime.tick(profile, now) == ["recap", "prune"]
-    assert len(jobs.sends) == 1
-    assert load_markers(profile).job_fail_since == {"export": now}
+    assert jobs.runtime.tick(profile, now) == ["prune"]
+    assert not jobs.sends
+    assert load_markers(profile).job_fail_since == {"export": now, "recap": now}
     assert "RuntimeError: export offline" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("recap_export_only", [False, True])
+def test_recap_deferred_when_export_fails(profile, jobs, monkeypatch, recap_export_only):
+    start = at("2026-11-11T09:00")
+    now = at("2026-11-12T09:00")
+    save_markers(profile, Markers(installed_at=start, last_recap_end=start,
+                                  last_recap_day=start.date()))
+    attempts = []
+    failing = True
+
+    def export(p):
+        attempts.append(p)
+        if failing and (not recap_export_only or len(attempts) == 2):
+            raise RuntimeError("export offline")
+        return []
+
+    monkeypatch.setattr(jobs.runtime, "export_new_sessions", export)
+    completed = jobs.runtime.tick(profile, now)
+    assert "recap" not in completed
+    assert "prune" in completed
+    assert not jobs.sends
+    markers = load_markers(profile)
+    assert markers.last_recap_end == start and markers.last_recap_day == start.date()
+    assert markers.recap_claim is None and markers.recap_deferred_at is None
+    assert markers.job_fail_since["recap"] == now
+    assert len(attempts) == 2
+    failing = False
+    assert "recap" in jobs.runtime.tick(profile, now + timedelta(minutes=15))
+    assert len(jobs.sends) == 1
+    assert jobs.sends[0].recap_claim_start == start
+    assert "recap" not in load_markers(profile).job_fail_since
 
 
 def test_improve_started_detached_not_awaited(profile, jobs, monkeypatch):
@@ -223,26 +257,65 @@ def test_job_failing_status_after_24h(profile, jobs, monkeypatch):
     assert "export" not in load_markers(profile).job_fail_since
 
 
-@pytest.mark.parametrize("resume", ["2026-11-12T09:15", "2026-11-13T09:15"])
-def test_pending_unknown_claim_closes_day_without_resend(profile, jobs, resume):
+def test_pending_unknown_claim_closes_day_without_resend(profile, jobs):
     frozen = at("2026-11-12T09:00")
     save_markers(profile, Markers(installed_at=frozen - timedelta(days=1),
                                   recap_claim="recap:2026-11-12",
                                   recap_claim_start=frozen - timedelta(days=1), recap_claim_end=frozen))
-    jobs.runtime.tick(profile, at(resume))
+    jobs.error = RuntimeError("recovery must not need dwt")
+    jobs.runtime.tick(profile, at("2026-11-12T09:15"))
     markers = load_markers(profile)
-    assert markers.last_recap_day == at(resume).date()
+    assert markers.last_recap_day == date(2026, 11, 12)
     assert markers.last_recap_end == frozen
     assert not jobs.sends
+    assert markers.recap_claim == "recap:2026-11-12"
+    assert [event.key for event in pending_status(profile)] == ["recap_unknown:2026-11-12"]
+
+
+def test_old_claim_reconciled_by_its_date_then_today_sent(profile, jobs, monkeypatch):
+    from assistant.locks import tick_lock
+
+    start = at("2026-11-10T09:00")
+    frozen = at("2026-11-11T09:00")
+    now = at("2026-11-12T09:00")
+    save_markers(profile, Markers(installed_at=start, last_recap_end=start,
+                                  last_recap_day=start.date(), recap_claim="recap:2026-11-11",
+                                  recap_claim_start=start, recap_claim_end=frozen))
+    building = []
+    build = jobs.runtime.build_recap
+
+    def observe_build(*args, **kwargs):
+        with tick_lock(profile) as acquired:
+            assert not acquired
+        building.append(load_markers(profile))
+        return build(*args, **kwargs)
+
+    monkeypatch.setattr(jobs.runtime, "build_recap", observe_build)
+    assert "recap" in jobs.runtime.tick(profile, now)
+    assert len(jobs.sends) == 1
+    recovered, = building
+    assert recovered.last_recap_day == date(2026, 11, 11)
+    assert recovered.last_recap_end == frozen and recovered.recap_claim == "recap:2026-11-11"
+    assert jobs.sends[0].recap_claim_start == frozen and jobs.sends[0].recap_claim_end == now
+    text = (profile.memory_dir / "recap/2026-11-12.md").read_text()
+    assert "Il recap del mercoledì 11 novembre potrebbe non essere arrivato: controlla la posta." in text
+    markers = load_markers(profile)
+    assert markers.last_recap_day == date(2026, 11, 12) and markers.last_recap_end == now
+    assert markers.recap_claim == "recap:2026-11-12"
+    assert pending_status(profile) == []
+    jobs.runtime.tick(profile, now + timedelta(minutes=15))
+    assert len(jobs.sends) == 1
 
 
 @pytest.mark.parametrize("code", [0, 3, 4])
 def test_delivery_outcome_preserves_markers(profile, jobs, code):
     jobs.code = code
     now = at("2026-11-12T11:00")
+    installed = at("2026-11-12T08:00")
+    save_markers(profile, Markers(installed_at=installed))
     jobs.runtime.tick(profile, now)
     markers = load_markers(profile)
-    assert markers.installed_at == now
+    assert markers.installed_at == installed
     if code in (0, 3):
         assert markers.last_recap_end == now
         assert markers.last_recap_day == now.date()
@@ -251,6 +324,35 @@ def test_delivery_outcome_preserves_markers(profile, jobs, code):
         assert markers.job_fail_since["recap"] == now
     jobs.runtime.tick(profile, now + timedelta(minutes=15))
     assert len(jobs.sends) == (2 if code == 4 else 1)
+
+
+@pytest.mark.parametrize("has_birthtime", [False, True])
+@pytest.mark.parametrize("has_recap", [False, True])
+def test_tick_uses_settings_creation_for_older_install(profile, jobs, monkeypatch, has_birthtime, has_recap):
+    installed = at("2026-11-10T08:00")
+    previous = at("2026-11-11T09:00")
+    now = at("2026-11-12T09:00")
+    settings = profile.root / "settings.json"
+    settings.write_text("{}")
+    original_stat = Path.stat
+
+    def stat(path, *args, **kwargs):
+        result = original_stat(path, *args, **kwargs)
+        if path != settings:
+            return result
+        times = {"st_mtime": (now if has_birthtime else installed).timestamp(), "st_mode": result.st_mode}
+        if has_birthtime:
+            times["st_birthtime"] = installed.timestamp()
+        return SimpleNamespace(**times)
+
+    monkeypatch.setattr(Path, "stat", stat)
+    if has_recap:
+        save_markers(profile, Markers(last_recap_end=previous, last_recap_day=previous.date()))
+    assert "recap" in jobs.runtime.tick(profile, now)
+    assert load_markers(profile).installed_at == installed
+    assert jobs.sends[0].recap_claim_start == (previous if has_recap else installed)
+    jobs.runtime.tick(profile, now + timedelta(minutes=15))
+    assert load_markers(profile).installed_at == installed
 
 
 @pytest.mark.parametrize("error", [TimeoutError("timeout"), RuntimeError("dwt offline")])

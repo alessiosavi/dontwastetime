@@ -3,6 +3,7 @@
 from contextlib import closing
 from copy import deepcopy
 from dataclasses import asdict, replace
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -31,6 +32,13 @@ def _atomic_write(path: Path, text: str, mode: int = 0o600) -> None:
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def installation_time(p: Profile, now: datetime) -> datetime:
+    """Stable fallback for profiles installed before the installed_at marker."""
+    path = p.root / "settings.json"
+    stat = (path if path.exists() else p.root).stat()
+    return min(now, datetime.fromtimestamp(getattr(stat, "st_birthtime", stat.st_mtime), timezone.utc))
 
 
 def _jsonc(text: str) -> dict:
@@ -187,6 +195,9 @@ def install(
     provider_json: Path | None = None, no_launchd: bool = False,
 ) -> Profile:
     """Refresh generated files, retaining user settings and persistent memory."""
+    from assistant.markers import load_markers, save_markers
+
+    now = datetime.now(timezone.utc)
     repo = Path(repo).expanduser().resolve()
     p = load_profile(profile, state_root)
     if p.name == "dev" and not _valid_email(dev_recipient):
@@ -256,6 +267,10 @@ def install(
     _atomic_write(p.root / "Assistente.command", script, 0o755)
     if desktop_launcher:
         _atomic_write(Path.home() / "Desktop/Assistente.command", script, 0o755)
+    markers = load_markers(p)
+    if markers.installed_at is None:
+        markers.installed_at = now
+        save_markers(p, markers)
     if not no_launchd:
         p.logs_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         plist = _plist_path(p)

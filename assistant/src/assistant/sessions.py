@@ -36,6 +36,7 @@ class Turn:
     next_message: str | None
     following_tool_calls: list[ToolCall]
     profile: str
+    completed_at: datetime | None = None
 
 
 def _opencode_json(p: Profile, args: list[str]):
@@ -91,6 +92,17 @@ def _tool_call(part: dict) -> ToolCall:
     )
 
 
+def _completed_at(message: dict) -> datetime | None:
+    completed = message.get("time", {}).get("completed")
+    if completed is None:
+        # Completed tools in an earlier message cannot finish a streaming reply.
+        return None
+    times = [completed]
+    times.extend(part["time"]["completed"] for part in message.get("content", [])
+                 if part.get("time", {}).get("completed") is not None)
+    return datetime.fromtimestamp(max(times) / 1000, timezone.utc)
+
+
 def turns_from_export(path: Path, profile: str) -> list[Turn]:
     data = json.loads(path.read_text(encoding="utf-8"))
     session_id = data["info"]["id"]
@@ -109,6 +121,7 @@ def turns_from_export(path: Path, profile: str) -> list[Turn]:
             ))
         elif message["type"] == "assistant" and turns:
             current = turns[-1]
+            current.completed_at = _completed_at(message)
             text = _text(message.get("content", []))
             if text:
                 current.reply = "\n".join(filter(None, (current.reply, text)))

@@ -51,7 +51,8 @@ class MailState:
         return {"items": page, "meta": {"next_cursor": cursor}}
 
 
-def export_turn(profile, *, at=START, calls=(), message="Chiudi questa", reply="Ho chiuso.", sid="ses_ui"):
+def export_turn(profile, *, at=START, calls=(), message="Chiudi questa", reply="Ho chiuso.", sid="ses_ui",
+                completed_after=timedelta(seconds=1)):
     profile.exports_dir.mkdir(exist_ok=True)
     content = [{"type": "text", "text": reply}]
     content += [
@@ -60,12 +61,15 @@ def export_turn(profile, *, at=START, calls=(), message="Chiudi questa", reply="
                    "output": call.output}} for call in calls
     ]
     model = {"providerID": "azure-ai", "id": "DeepSeek-V4.1-Flash-1017"}
+    reply_time = {"created": (at + timedelta(milliseconds=1)).timestamp() * 1000}
+    if completed_after is not None:
+        reply_time["completed"] = (at + completed_after).timestamp() * 1000
     (profile.exports_dir / f"{sid}.json").write_text(json.dumps({
         "info": {"id": sid, "model": model}, "messages": [
             {"id": "user", "type": "user", "text": message,
              "time": {"created": at.timestamp() * 1000}},
             {"id": "reply", "type": "assistant", "content": content, "model": model,
-             "time": {"created": (at + timedelta(seconds=1)).timestamp() * 1000}},
+             "time": reply_time},
         ],
     }))
 
@@ -85,10 +89,11 @@ def recap_dwt(profile, fake_dwt):
         "args = sys.argv[1:]\n"
         "assert args[0] == 'send-note'\n"
         "path = pathlib.Path(args[args.index('--file')+1])\n"
-        "row = {'argv': args, 'text': path.read_text(), 'stdin': sys.stdin.read(),\n"
+        "row = {'argv': args, 'env': dict(os.environ), 'text': path.read_text(), 'stdin': sys.stdin.read(),\n"
         "       'latest': (root/'memory/recap/latest.md').read_text(),\n"
         "       'markers': json.loads((root/'markers.json').read_text())}\n"
         f"with pathlib.Path({str(trace)!r}).open('a') as out: out.write(json.dumps(row)+'\\n')\n"
+        "if len(path.read_bytes()) > 65536: sys.exit(4)\n"
         f"control = json.loads(pathlib.Path({str(control)!r}).read_text())\n"
         "if control.get('signal'): os.kill(os.getpid(), signal.SIGKILL)\n"
         "if control.get('sleep'): time.sleep(control['sleep'])\n"
@@ -125,7 +130,7 @@ def test_fatto_lists_only_successful_triage_calls(profile):
         ToolCall("dwt", "mute_thread", {"thread": "#16"}, True, "{}"),
         ToolCall("dwt", "reopen", {"thread": "#17"}, True, "{}"),
     ], sid="a_later")
-    for at, sid in ((START - timedelta(seconds=1), "old"), (NOW, "future")):
+    for at, sid in ((START - timedelta(seconds=2), "old"), (NOW, "future")):
         export_turn(profile, at=at, calls=[ToolCall("dwt", "reopen", {"thread": "#999"}, True, "")], sid=sid)
     recap = build_recap(profile, START, NOW, client=MailState(), summarize=lambda turns: "Apertura.")
     fatto = recap.text.split("Fatto\n")[1].split("\n\n")[0]
@@ -148,6 +153,35 @@ def test_sections_in_fixed_order(profile):
     assert "- e altre 102" in recap.text
 
 
+@pytest.mark.parametrize("completed_after", [timedelta(minutes=1), timedelta(minutes=2)])
+def test_action_completed_after_boundary_counted_next_recap(profile, completed_after):
+    from assistant.recap import build_recap
+    from assistant.sessions import turns_from_export
+
+    started = NOW - timedelta(minutes=1)
+    calls = [ToolCall("dwt", "mark_handled", {"thread": "#across-boundary"}, True, "")]
+    export_turn(profile, at=started, calls=calls, completed_after=None)
+    first = build_recap(profile, START, NOW, client=MailState(),
+                        summarize=lambda turns: pytest.fail("incomplete reply is not activity"))
+    assert not first.activity
+    assert "#across-boundary" not in first.text
+    turn, = turns_from_export(profile.exports_dir / "ses_ui.json", "dev")
+    assert turn.at == started and turn.completed_at is None
+
+    export_turn(profile, at=started, calls=calls, completed_after=completed_after)
+    completed, = turns_from_export(profile.exports_dir / "ses_ui.json", "dev")
+    assert completed.at == started and completed.completed_at == started + completed_after
+    # Completion exactly at NOW is excluded from the first period and included in the next.
+    refreshed_first = build_recap(profile, START, NOW, client=MailState(),
+                                  summarize=lambda turns: pytest.fail("completion is outside this period"))
+    assert not refreshed_first.activity and "#across-boundary" not in refreshed_first.text
+    second = build_recap(profile, NOW, NOW + timedelta(days=1), client=MailState(), summarize=lambda turns: "")
+    assert second.activity and second.text.count("chiusa · #across-boundary") == 1
+    third = build_recap(profile, NOW + timedelta(days=1), NOW + timedelta(days=2),
+                        client=MailState(), summarize=lambda turns: "")
+    assert not third.activity and "#across-boundary" not in third.text
+
+
 def test_no_activity_one_liner(profile):
     from assistant.recap import build_recap
 
@@ -156,6 +190,19 @@ def test_no_activity_one_liner(profile):
     assert recap.text.startswith("Nessuna attività con l'assistente da mercoledì 11 novembre. Risposte ancora aperte: 3.\n")
     assert "\nCosto\n- Costo da 11/11/2026:" in recap.text
     assert "\nFatto\n" not in recap.text and not recap.activity
+
+
+def test_first_recap_includes_activity_since_install_marker(profile):
+    from assistant.recap import build_recap, recap_period_start
+
+    save_markers(profile, Markers(installed_at=START))
+    export_turn(profile, at=START + timedelta(hours=1), calls=[
+        ToolCall("dwt", "mark_handled", {"thread": "#since-install"}, True, ""),
+    ])
+    recap = build_recap(profile, recap_period_start(profile, NOW), NOW,
+                        client=MailState(), summarize=lambda turns: "")
+    assert recap.period_start == START
+    assert "chiusa · #since-install" in recap.text
 
 
 def test_notes_section_lists_notes_added_in_period(profile):
@@ -205,6 +252,7 @@ def test_deliver_writes_files_before_sending(profile, recap_dwt):
     assert row["stdin"] == ""
     assert row["argv"] == [
         "send-note", "--config", str(profile.settings.dwt_config), "--env", str(profile.settings.dwt_env),
+        "--state-dir", str(profile.dwt_state_dir),
         "--to", "dev@example.com", "--subject", recap.subject,
         "--file", str(profile.memory_dir / "recap/2026-11-12.md"),
     ]
@@ -216,6 +264,56 @@ def test_deliver_writes_files_before_sending(profile, recap_dwt):
     assert "dev@example.com" not in log and recap.text not in log and "private diagnostic" not in log
     assert deliver_recap(profile, recap, NOW) == "skipped"
     assert len(trace_rows(recap_dwt[1])) == 1
+
+
+def test_send_note_passes_state_dir(profile, recap_dwt, monkeypatch):
+    from assistant.recap import deliver_recap
+
+    monkeypatch.setenv("DWT_STATE_DIR", "/live/state")
+    monkeypatch.setenv("DWT_CONFIG", "/live/config.json")
+    monkeypatch.setenv("DWT_OTHER_OVERRIDE", "unsafe")
+    monkeypatch.setenv("AZURE_API_KEY", "must-not-reach-send-note")
+    monkeypatch.setenv("LANG", "it_IT.UTF-8")
+    assert deliver_recap(profile, recap_value(), NOW) == "sent"
+    row, = trace_rows(recap_dwt[1])
+    assert "--state-dir" in row["argv"]
+    assert row["argv"][row["argv"].index("--state-dir") + 1] == str(profile.dwt_state_dir)
+    # Python may add LC_CTYPE at startup, independently of the supplied env.
+    assert {key: value for key, value in row["env"].items() if key != "LC_CTYPE"} == {
+        key: os.environ[key] for key in ("PATH", "HOME", "LANG")
+    }
+
+
+@pytest.mark.parametrize("source", ["actions", "opening", "bullets", "direct"])
+def test_oversized_recap_is_trimmed_under_send_limit(profile, recap_dwt, source):
+    from assistant.recap import build_recap, deliver_recap, write_recap
+
+    calls = [ToolCall("dwt", "mark_handled", {"thread": f"azione{n}:" + "🙂" * 1000}, True, "")
+             for n in range(70)]
+    export_turn(profile, calls=calls)
+    mail = MailState()
+    opening = "🙂" * 30_000 if source == "opening" else "Apertura."
+    if source == "bullets":
+        NotesStore(profile.memory_dir).remember("è" * 500, START + timedelta(hours=1))
+        mail.items[0]["untrusted"]["subject"] = "🙂" * 1000
+    recap = (recap_value("🙂" * 30_000) if source == "direct" else
+             build_recap(profile, START, NOW, client=mail, summarize=lambda turns: opening))
+    if source != "direct":
+        assert len(recap.text.encode("utf-8")) <= 60_000
+    if source in ("actions", "bullets"):
+        fatto = recap.text.split("Fatto\n")[1].split("\n\n")[0].splitlines()
+        assert len(fatto) == 41
+        assert fatto[-1] == "- e altre 30 azioni"
+        assert all(len(line[2:]) <= 300 for line in recap.text.splitlines() if line.startswith("- "))
+        assert "azione39:" in recap.text and "azione40:" not in recap.text
+    path = write_recap(profile, recap, NOW)
+    text = path.read_text()
+    assert len(text.encode("utf-8")) <= 60_000
+    if source in ("opening", "direct"):
+        assert text.endswith("\n…(testo accorciato)\n")
+    assert deliver_recap(profile, recap, NOW) == "sent"
+    row, = trace_rows(recap_dwt[1])
+    assert row["text"] == text
 
 
 def test_deliver_unknown_never_resends(profile, recap_dwt):
@@ -379,8 +477,9 @@ def test_summarizer_failure_does_not_block(profile):
 
 @pytest.mark.parametrize("dry_run", [True, False])
 def test_cli_recap_dry_run_never_sends(profile, recap_dwt, monkeypatch, dry_run):
-    from assistant import cli, recap
+    from assistant import cli, recap, sessions
 
+    monkeypatch.setattr(sessions, "export_new_sessions", lambda p: [])
     monkeypatch.setattr(recap, "DwtClient", lambda *a, **kw: MailState())
     monkeypatch.setattr(recap, "summarize_with_agent", lambda p: lambda turns: "")
     save_markers(profile, Markers(last_recap_end=START, recap_claim="recap:previous"))
@@ -413,6 +512,91 @@ def test_cli_recap_tick_lock_busy_and_released(profile, monkeypatch, capsys):
         raise RuntimeError("release on failure")
     with tick_lock(profile) as acquired:
         assert acquired
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_manual_recap_deferred_when_export_fails(profile, recap_dwt, monkeypatch, dry_run):
+    from assistant import cli, recap, sessions
+
+    monkeypatch.setattr(recap, "DwtClient", lambda *a, **kw: MailState())
+    monkeypatch.setattr(recap, "summarize_with_agent", lambda p: lambda turns: "")
+    save_markers(profile, Markers(installed_at=START, last_recap_end=START))
+    saved = profile.markers_path.read_bytes()
+
+    def fail(p):
+        raise RuntimeError("export offline")
+
+    monkeypatch.setattr(sessions, "export_new_sessions", fail)
+    args = ["recap", "--profile", "dev", "--state-root", str(profile.root.parents[1])]
+    if dry_run:
+        args.append("--dry-run")
+    assert cli.main(args) == 1
+    assert trace_rows(recap_dwt[1]) == []
+    assert profile.markers_path.read_bytes() == saved
+    assert not (profile.memory_dir / "recap/latest.md").exists()
+
+    def fresh_export(p):
+        export_turn(p, at=START + timedelta(hours=1), calls=[
+            ToolCall("dwt", "mark_handled", {"thread": "#fresh"}, True, ""),
+        ])
+
+    monkeypatch.setattr(sessions, "export_new_sessions", fresh_export)
+    assert cli.main(args) == 0
+    assert "chiusa · #fresh" in (profile.memory_dir / "recap/latest.md").read_text()
+    assert len(trace_rows(recap_dwt[1])) == (0 if dry_run else 1)
+
+
+@pytest.mark.parametrize("same_day", [False, True])
+def test_manual_recap_reconciles_claim_first(profile, recap_dwt, monkeypatch, same_day):
+    from assistant import cli, recap, sessions
+    from assistant.locks import tick_lock
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return NOW
+
+    monkeypatch.setattr(cli, "datetime", Clock)
+    frozen = NOW - timedelta(hours=1) if same_day else START
+    claim_day = "2026-11-12" if same_day else "2026-11-11"
+    save_markers(profile, Markers(installed_at=START - timedelta(days=1),
+                                  last_recap_end=START - timedelta(days=1),
+                                  recap_claim=f"recap:{claim_day}",
+                                  recap_claim_start=START - timedelta(days=1), recap_claim_end=frozen))
+    export_turn(profile, at=START - timedelta(hours=1), sid="old", calls=[
+        ToolCall("dwt", "mark_handled", {"thread": "#already-claimed"}, True, ""),
+    ])
+    export_turn(profile, at=START + timedelta(hours=1), sid="new", calls=[
+        ToolCall("dwt", "mark_handled", {"thread": "#new"}, True, ""),
+    ])
+    recovered = []
+
+    def export(p):
+        with tick_lock(p) as acquired:
+            assert not acquired
+        recovered.append(load_markers(p))
+        return []
+
+    monkeypatch.setattr(sessions, "export_new_sessions", export)
+    monkeypatch.setattr(recap, "DwtClient", lambda *a, **kw: MailState())
+    monkeypatch.setattr(recap, "summarize_with_agent", lambda p: lambda turns: "")
+    args = ["recap", "--profile", "dev", "--state-root", str(profile.root.parents[1])]
+    assert cli.main(args) == 0
+    markers = load_markers(profile)
+    if same_day:
+        assert trace_rows(recap_dwt[1]) == [] and recovered == []
+        assert markers.last_recap_end == frozen and markers.recap_claim == "recap:2026-11-12"
+        assert [event.key for event in pending_status(profile)] == ["recap_unknown:2026-11-12"]
+    else:
+        row, = trace_rows(recap_dwt[1])
+        snapshot, = recovered
+        assert snapshot.last_recap_day == date(2026, 11, 11)
+        assert snapshot.last_recap_end == START and snapshot.recap_claim == "recap:2026-11-11"
+        assert row["markers"]["recap_claim_start"] == START.isoformat()
+        assert "#already-claimed" not in row["text"] and "chiusa · #new" in row["text"]
+        assert "Il recap del mercoledì 11 novembre potrebbe non essere arrivato: controlla la posta." in row["text"]
+        assert markers.last_recap_end == NOW
+    assert markers.last_recap_day == date(2026, 11, 12)
 
 
 def test_subject_italian_date(profile):

@@ -11,11 +11,12 @@ import traceback
 from zoneinfo import ZoneInfo
 
 from assistant.dwt_client import DwtClient
+from assistant.install import installation_time
 from assistant.locks import tick_lock
 from assistant.markers import Markers, load_markers, save_markers
 from assistant.notes_mcp import _require_aware
 from assistant.profile import Profile, Settings
-from assistant.recap import build_recap, deliver_recap, mail_freshness, summarize_with_agent
+from assistant.recap import build_recap, deliver_recap, mail_freshness, reconcile_claim, summarize_with_agent
 from assistant.sessions import export_new_sessions
 from assistant.snapshot import _snapshots, prune_snapshots, take_snapshot, ui_active
 from assistant.status import ack_status, record_status
@@ -48,15 +49,10 @@ def due_jobs(
 
 
 def _recap(p: Profile, now: datetime) -> bool:
+    reconcile_claim(p, now)
     m = load_markers(p)
     today = now.astimezone(ROME).date()
-    # A crash after claiming can survive midnight. Close exactly that frozen
-    # period without another send or a network dependency; later activity stays
-    # available to the next recap. Completed claims don't block future days.
-    if (m.recap_claim and m.recap_claim_end is not None
-            and (m.last_recap_end is None or m.last_recap_end < m.recap_claim_end)):
-        m.last_recap_day, m.last_recap_end = today, m.recap_claim_end
-        save_markers(p, m)
+    if m.recap_claim == f"recap:{today.isoformat()}":
         return True
     with DwtClient(p, now=now) as client:
         if (mail_freshness(client, now) > timedelta(minutes=15)
@@ -66,6 +62,7 @@ def _recap(p: Profile, now: datetime) -> bool:
             return False
         start = m.last_recap_end or m.installed_at
         assert start is not None  # Initialized by tick before dispatching jobs.
+        export_new_sessions(p)
         recap = build_recap(p, start, now, client=client, summarize=summarize_with_agent(p))
     outcome = deliver_recap(p, recap, now)
     if outcome == "failed":
@@ -152,7 +149,7 @@ def tick(p: Profile, now: datetime) -> list[str]:
             return []
         m = load_markers(p)
         if m.installed_at is None:
-            m.installed_at = now
+            m.installed_at = installation_time(p, now)
             save_markers(p, m)
         active, age = False, None
         try:

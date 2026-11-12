@@ -1,6 +1,7 @@
 """Installation contracts: all external tools and HOME belong to this test."""
 
 import hashlib
+from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
@@ -163,6 +164,26 @@ def test_install_is_idempotent(installation):
     assert (p.memory_dir / "notes.md").read_text() == "keep my note\n"
     assert not (p.root / "harness-live/stale.md").exists()
     assert [c[1] for c in calls(installation) if c[0] == "uv"] == ["venv", "pip", "venv", "pip"]
+
+
+@pytest.mark.parametrize("profile_name", ["dev", "operator"])
+def test_install_writes_installed_at(installation, profile_name):
+    from assistant.markers import load_markers, save_markers
+
+    before = datetime.now(timezone.utc)
+    p = do_install(installation, profile_name, no_launchd=True)
+    after = datetime.now(timezone.utc)
+    markers = load_markers(p)
+    assert markers.installed_at is not None
+    assert before <= markers.installed_at <= after
+    assert markers.installed_at.tzinfo == timezone.utc
+    installed_at = markers.installed_at
+    markers.last_prune = datetime(2026, 11, 11, tzinfo=timezone.utc)
+    save_markers(p, markers)
+    do_install(installation, profile_name, no_launchd=True)
+    reinstalled = load_markers(p)
+    assert reinstalled.installed_at == installed_at
+    assert reinstalled.last_prune == datetime(2026, 11, 11, tzinfo=timezone.utc)
 
 
 def test_uninstall_removes_plist_and_launcher_keeps_state(installation):

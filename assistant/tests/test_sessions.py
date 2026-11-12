@@ -101,6 +101,7 @@ def test_turns_from_fixture():
     first, second = turns
     assert first.turn_id == "ses_e32d1389bffeWkff0K3fth8DPG:0"
     assert first.at == datetime.fromtimestamp(1794443757.693, timezone.utc)
+    assert first.completed_at == datetime(2026, 11, 12, 0, 36, 1, 874000, tzinfo=timezone.utc)
     assert first.history == [] and first.profile == "dev"
     assert len(first.tool_calls) == 1
     call = first.tool_calls[0]
@@ -112,7 +113,29 @@ def test_turns_from_fixture():
     assert second.reply == "SECOND_TURN_BLOCKED"
     assert second.history == [("user", first.message), ("assistant", first.reply)]
     assert second.next_message is None
+    assert second.completed_at == datetime(2026, 11, 12, 0, 36, 16, 823000, tzinfo=timezone.utc)
     assert "reasoning_content" not in first.reply
+
+
+@pytest.mark.parametrize("source", ["part", "pending", "user_only"])
+def test_turn_completion_uses_last_assistant_message_and_parts(tmp_path, source):
+    from assistant.sessions import turns_from_export
+
+    data = deepcopy(json.loads(FIXTURE.read_text()))
+    expected = None
+    if source == "part":
+        data["messages"][2]["content"][-1]["time"] = {"completed": 1794443762500}
+        expected = datetime.fromtimestamp(1794443762.5, timezone.utc)
+    elif source == "pending":
+        # An earlier completed tool message must not finish a still-streaming reply.
+        del data["messages"][2]["time"]["completed"]
+    else:
+        data["messages"] = data["messages"][:1]
+    path = tmp_path / "turns.json"
+    path.write_text(json.dumps(data))
+    first = turns_from_export(path, "dev")[0]
+    assert first.completed_at == expected
+    assert first.at == datetime.fromtimestamp(1794443757.693, timezone.utc)
 
 
 def test_tool_name_split(tmp_path):
