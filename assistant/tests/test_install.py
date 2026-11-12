@@ -361,6 +361,34 @@ def test_reinstall_swaps_staged_venv_under_locks_and_unlocks_tick_before_bootstr
     assert not (p.root / "venv.old").exists()
 
 
+@pytest.mark.parametrize("venv_kind", ["symlink", "file"])
+def test_reinstall_replaces_non_directory_venv(installation, venv_kind):
+    p = do_install(installation)
+    venv = p.root / "venv"
+    previous_venv = p.root / "previous-venv"
+    (venv / "old.txt").write_text("working environment")
+    venv.rename(previous_venv)
+    if venv_kind == "symlink":
+        venv.symlink_to(previous_venv, target_is_directory=True)
+    else:
+        venv.write_text("old environment file")
+    installation["records"].write_text("")
+
+    assert do_install(installation).root == p.root
+
+    assert venv.is_dir() and not venv.is_symlink()
+    assert (venv / "bin/python").read_text() == "staged interpreter\n"
+    assert (venv / "installed.txt").read_text() == "installed package\n"
+    assert not (venv / "old.txt").exists()
+    assert not (p.root / "venv.new").exists()
+    assert not (p.root / "venv.old").exists()
+    assert not (p.root / "venv.old").is_symlink()
+    assert (previous_venv / "old.txt").read_text() == "working environment"
+    plist = Path.home() / "Library/LaunchAgents/com.local.dontwastetime.assistant.dev.plist"
+    assert calls(installation)[-1] == ["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist)]
+    assert (installation["loaded_jobs"] / "com.local.dontwastetime.assistant.dev").exists()
+
+
 @pytest.mark.parametrize("leftover_kind", ["directory", "file", "symlink", "dangling-symlink"])
 def test_reinstall_removes_leftover_old_venv(installation, leftover_kind):
     p = do_install(installation)
@@ -407,23 +435,26 @@ def test_reinstall_refuses_swap_if_bootout_leaves_job_loaded(installation):
     assert (installation["loaded_jobs"] / "com.local.dontwastetime.assistant.dev").exists()
 
 
-def test_reinstall_restores_old_venv_if_staged_rename_fails(installation, monkeypatch):
+@pytest.mark.parametrize("error_type", [OSError, KeyboardInterrupt, SystemExit])
+def test_reinstall_restores_old_venv_if_staged_rename_fails(installation, monkeypatch, error_type):
     p = do_install(installation)
     old_python = p.root / "venv/bin/python"
     old_python.write_text("working interpreter\n")
     old_inode = old_python.stat().st_ino
     installation["records"].write_text("")
     rename = Path.rename
+    failure = error_type("rename failed")
 
     def fail_staged_rename(source, target):
         if source == p.root / "venv.new":
-            raise OSError("rename failed")
+            raise failure
         return rename(source, target)
 
     monkeypatch.setattr(Path, "rename", fail_staged_rename)
-    with pytest.raises(OSError, match="rename failed"):
+    with pytest.raises(error_type, match="rename failed") as error:
         do_install(installation)
 
+    assert error.value is failure
     assert old_python.read_text() == "working interpreter\n"
     assert old_python.stat().st_ino == old_inode
     assert not (p.root / "venv.new").exists()
@@ -434,8 +465,9 @@ def test_reinstall_restores_old_venv_if_staged_rename_fails(installation, monkey
 
 @pytest.mark.parametrize("no_launchd", [False, True])
 @pytest.mark.parametrize("bootstrap_fails", [False, True])
+@pytest.mark.parametrize("error_type", [ValueError, KeyboardInterrupt, SystemExit])
 def test_reinstall_restores_existing_job_after_render_failure(
-    installation, monkeypatch, no_launchd, bootstrap_fails,
+    installation, monkeypatch, no_launchd, bootstrap_fails, error_type,
 ):
     import assistant.install as installer
 
@@ -444,10 +476,11 @@ def test_reinstall_restores_existing_job_after_render_failure(
     old_plist = plist.read_bytes()
     installation["records"].write_text("")
     rendered = []
+    failure = error_type("render failed")
 
     def fail_render(*args):
         rendered.append(True)
-        raise ValueError("render failed")
+        raise failure
 
     run = subprocess.run
 
@@ -462,9 +495,10 @@ def test_reinstall_restores_existing_job_after_render_failure(
     monkeypatch.setattr(installer, "render_workspace", fail_render)
     if bootstrap_fails:
         monkeypatch.setattr(installer.subprocess, "run", fail_bootstrap)
-    with pytest.raises(ValueError, match="render failed"):
+    with pytest.raises(error_type, match="render failed") as error:
         do_install(installation, no_launchd=no_launchd)
 
+    assert error.value is failure
     assert rendered == [True]
     assert plist.read_bytes() == old_plist
     assert [call[1] for call in calls(installation) if call[0] == "launchctl"] == [

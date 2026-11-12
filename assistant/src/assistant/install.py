@@ -328,13 +328,15 @@ def install(
                     venv.rename(old_venv)
                 try:
                     staged_venv.rename(venv)
-                except OSError:
+                except BaseException:
                     # Keep the old interpreter usable if the second rename fails.
                     with suppress(OSError):
                         if old_venv.exists():
                             old_venv.rename(venv)
                     raise
-                if old_venv.exists():
+                if old_venv.is_symlink() or old_venv.is_file():
+                    old_venv.unlink()
+                elif old_venv.is_dir():
                     shutil.rmtree(old_venv)
                 _atomic_write(p.root / "settings.json", json.dumps(asdict(settings), default=str, indent=2) + "\n")
                 _atomic_write(settings.secrets_env, f"AZURE_API_KEY={key}\n")
@@ -369,7 +371,7 @@ def install(
                 _atomic_write(plist, launchd_plist(p))
             if not no_launchd or was_loaded:
                 subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist)], check=True)
-        except Exception:
+        except BaseException:
             if was_loaded and plist.is_file():
                 with suppress(OSError, subprocess.SubprocessError):
                     subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist)], check=True)
