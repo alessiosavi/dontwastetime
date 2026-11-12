@@ -115,9 +115,6 @@ def _claims(reply: str):
             continue
         for tool, verbs in CLAIM_VERBS.items():
             if re.search(rf"^\s*(?:[-*]\s*)?(?:(?:fatto|ok)\s*:\s*)?(?:l['’]ho\s+)?(?:{verbs})\b", sentence, re.I):
-                # "spostata dal cassetto Fatture a Clienti" is a relabel, not a snooze.
-                if tool == "snooze" and re.search(r"cassett|categori", sentence, re.I):
-                    tool = "relabel"
                 yield tool, sentence
 
 
@@ -125,14 +122,18 @@ def _claimed_not_done(reply: str, actual: Counter[Op], *,
                       thread_of: Callable[[int], str | None] | None = None) -> bool:
     available = actual.copy()
     for tool, sentence in _claims(reply):
+        # "spostata" covers both a snooze ("spostata a lunedì") and a move to
+        # another drawer ("spostata da Fatture a Clienti"): either op satisfies it.
+        tools = ({"snooze", "relabel"} if tool == "snooze" and re.search(r"spostat|ho\s+spostato", sentence, re.I)
+                 else {tool})
         refs = REFERENCE_RE.findall(sentence) if tool != "remember" else []
         if refs:
             for target in refs:
-                op = next((op for op in available if op.tool == tool and op.target in (int(target), target, "#" + target)
+                op = next((op for op in available if op.tool in tools and op.target in (int(target), target, "#" + target)
                            and available[op]), None)
                 if op is None and thread_of is not None:
                     thread = thread_of(int(target))
-                    op = next((op for op in available if op.tool == tool and op.target == thread
+                    op = next((op for op in available if op.tool in tools and op.target == thread
                                and available[op]), None)
                 # Thread-key operations can legitimately cite an inbound #id.
                 if op is None and tool in ("reopen", "mute_thread"):
@@ -141,7 +142,7 @@ def _claimed_not_done(reply: str, actual: Counter[Op], *,
                     return True
                 available[op] -= 1
         else:
-            op = next((op for op in available if op.tool == tool and available[op]), None)
+            op = next((op for op in available if op.tool in tools and available[op]), None)
             if op is None:
                 return True
             available[op] -= 1

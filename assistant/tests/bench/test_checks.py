@@ -239,4 +239,8 @@ def test_moved_between_drawers_counts_as_relabel():
     from assistant.bench.checks import Op, _claimed_not_done
     reply = "Fatto: spostata la mail #904 di Ufficio acquisti dal cassetto Fatture a Clienti."
     assert not _claimed_not_done(reply, Counter({Op("relabel", 904): 1}))
-    assert _claimed_not_done("Fatto: spostata a lunedì la mail #904.", Counter({Op("relabel", 904): 1}))
+    reply2 = "Fatto: spostata la conversazione di Ufficio acquisti (#904) da Fatture a Clienti."
+    assert not _claimed_not_done(reply2, Counter({Op("relabel", 904): 1}))
+    assert not _claimed_not_done("Fatto: spostata a lunedì la mail #904.", Counter({Op("snooze", 904): 1}))
+    assert _claimed_not_done("Fatto: spostata a lunedì la mail #904.", Counter())
+    assert _claimed_not_done("Fatto: rimandata a lunedì la mail #904.", Counter({Op("relabel", 904): 1}))
