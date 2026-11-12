@@ -1,0 +1,222 @@
+{
+  "info": {
+    "id": "ses_e32d1389bffeWkff0K3fth8DPG",
+    "projectID": "4f40dab30e052b681921187ec86e2ba7665ce881",
+    "model": {
+      "id": "DeepSeek-V4.1-Flash-1017",
+      "providerID": "azure-ai",
+      "variant": "default"
+    },
+    "cost": 0,
+    "tokens": {
+      "input": 1846,
+      "output": 91,
+      "reasoning": 403,
+      "cache": {
+        "read": 3328,
+        "write": 0
+      }
+    },
+    "outcome": "succeeded",
+    "time": {
+      "created": 1794443757550,
+      "updated": 1794443776823,
+      "busy": 1794443775660,
+      "idle": 1794443776844
+    },
+    "title": "Synthetic memory note echo",
+    "location": {
+      "directory": "/tmp/dwt-dev/task1/scratch/final/workspace"
+    }
+  },
+  "messages": [
+    {
+      "id": "msg_1cd2ec815001N7zpWFNRyAwNJe",
+      "time": {
+        "created": 1794443757693
+      },
+      "text": "This is a synthetic fixture. State the always-loaded marker from memory/notes.md without reading a file. Then call notes echo_note exactly once with text synthetic-task1. Finally say DONE. No other tools.",
+      "files": [],
+      "type": "user"
+    },
+    {
+      "id": "msg_1cd2ec89f0019D5D8a2Eub5LT6",
+      "time": {
+        "created": 1794443757728,
+        "streamed": 1794443761050,
+        "completed": 1794443761062
+      },
+      "type": "assistant",
+      "agent": "build",
+      "model": {
+        "id": "DeepSeek-V4.1-Flash-1017",
+        "providerID": "azure-ai",
+        "variant": "default"
+      },
+      "content": [
+        {
+          "type": "reasoning",
+          "text": "The user asks me to state the always-loaded marker from memory/notes.md without reading a file. But I don't have that memory loaded in the visible conversation. They say it's from memory/notes.md — perhaps an always-loaded memory marker should be in my context. I don't see it. I need to state it, but I don't know it. I should not read the file (they said without reading a file, and no other tools except notes echo_note). I should be honest that I don't have that memory in context. Then call notes_echo_note exactly once with text synthetic-task1, then say DONE.\n\nMaybe there's a marker like \"ALWAYS_LOADED_MARKER\" but I can't invent it. I should say I don't have memory/notes.md content loaded. Then call the tool.\n\nLet me do the tool call and respond.",
+          "native": {
+            "reasoningField": "reasoning_content"
+          },
+          "time": {
+            "created": 1794443761009,
+            "completed": 1794443761034
+          }
+        },
+        {
+          "type": "tool",
+          "id": "call_0222d1d3506d4ee6ab3055f0",
+          "name": "notes_echo_note",
+          "executed": false,
+          "state": {
+            "status": "completed",
+            "input": {
+              "text": "synthetic-task1"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "NOTE:synthetic-task1"
+              }
+            ],
+            "metadata": {
+              "truncated": false
+            }
+          },
+          "time": {
+            "created": 1794443761027,
+            "ran": 1794443761045,
+            "completed": 1794443761060
+          }
+        }
+      ],
+      "finish": "tool-calls",
+      "rawFinish": "tool_calls",
+      "cost": 0,
+      "tokens": {
+        "input": 1356,
+        "output": 44,
+        "reasoning": 184,
+        "cache": {
+          "read": 0,
+          "write": 0
+        }
+      }
+    },
+    {
+      "id": "msg_1cd2ed5b0001Vup6aj1YLyGA24",
+      "time": {
+        "created": 1794443761073,
+        "streamed": 1794443761870,
+        "completed": 1794443761874
+      },
+      "type": "assistant",
+      "agent": "build",
+      "model": {
+        "id": "DeepSeek-V4.1-Flash-1017",
+        "providerID": "azure-ai",
+        "variant": "default"
+      },
+      "content": [
+        {
+          "type": "reasoning",
+          "text": "Now answer. State marker — I don't have it. Be honest. Then DONE.",
+          "native": {
+            "reasoningField": "reasoning_content"
+          },
+          "time": {
+            "created": 1794443761602,
+            "completed": 1794443761858
+          }
+        },
+        {
+          "type": "text",
+          "text": "I don't have the contents of `memory/notes.md` loaded in my context, so I can't state its always-loaded marker from memory.\n\nDONE"
+        }
+      ],
+      "finish": "stop",
+      "rawFinish": "stop",
+      "cost": 0,
+      "tokens": {
+        "input": 64,
+        "output": 33,
+        "reasoning": 20,
+        "cache": {
+          "read": 1536,
+          "write": 0
+        }
+      }
+    },
+    {
+      "id": "msg_1cd2ed8d70011RGhWMzXjhON6B",
+      "time": {
+        "created": 1794443761879
+      },
+      "type": "idle",
+      "outcome": "succeeded"
+    },
+    {
+      "id": "msg_1cd2f0da9001YVX3rmiMErH37P",
+      "time": {
+        "created": 1794443775694
+      },
+      "text": "Create permission-proof.txt in the current workspace containing CREATED. Try a real filesystem write using edit, write, patch, or shell/bash. Do not use the notes echo tool. If writing is impossible, reply SECOND_TURN_BLOCKED. Be brief.",
+      "files": [],
+      "type": "user"
+    },
+    {
+      "id": "msg_1cd2f0ede001mSKbvqEcVUPLxn",
+      "time": {
+        "created": 1794443775712,
+        "streamed": 1794443776820,
+        "completed": 1794443776823
+      },
+      "type": "assistant",
+      "agent": "build",
+      "model": {
+        "id": "DeepSeek-V4.1-Flash-1017",
+        "providerID": "azure-ai",
+        "variant": "default"
+      },
+      "content": [
+        {
+          "type": "reasoning",
+          "text": "The user asks to create a file permission-proof.txt in the current workspace. But my available tools are only notes_echo_note, read, skill. There is no edit, write, patch, or shell/bash tool. I cannot write files. So I must reply SECOND_TURN_BLOCKED. Be brief.",
+          "native": {
+            "reasoningField": "reasoning_content"
+          },
+          "time": {
+            "created": 1794443776551,
+            "completed": 1794443776809
+          }
+        },
+        {
+          "type": "text",
+          "text": "SECOND_TURN_BLOCKED"
+        }
+      ],
+      "finish": "stop",
+      "rawFinish": "stop",
+      "cost": 0,
+      "tokens": {
+        "input": 173,
+        "output": 8,
+        "reasoning": 65,
+        "cache": {
+          "read": 1536,
+          "write": 0
+        }
+      }
+    },
+    {
+      "id": "msg_1cd2f134c002TmkOHwREinqyK3",
+      "time": {
+        "created": 1794443776844
+      },
+      "type": "idle",
+      "outcome": "succeeded"
+    }
+  ]
+}
