@@ -48,12 +48,17 @@ def main(argv=None) -> int:
     recapping = commands.add_parser("recap", help="prepara e invia il riepilogo dell'assistente")
     recapping.add_argument("--dry-run", action="store_true", help="scrivi i file senza inviare")
     tone_card = commands.add_parser("tone-card", help="prepara una bozza della scheda di tono (solo dev)")
+    bench = commands.add_parser("bench", help="valuta l'assistente sulla copia della posta")
+    bench.add_subparsers(dest="bench_command")
     for subcommand in (
-        installing, removing, launching, notes, ticking, exporting, snapshotting, recapping, tone_card,
+        installing, removing, launching, notes, ticking, exporting, snapshotting, recapping, tone_card, bench,
     ):
         _common(subcommand, suppress_defaults=True)
     args = parser.parse_args(argv)
     try:
+        if args.command == "bench":
+            bench.print_help()
+            return 0
         if args.command == "install":
             install(
                 args.profile, repo=args.repo, state_root=args.state_root,
