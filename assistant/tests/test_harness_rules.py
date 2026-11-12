@@ -1,12 +1,13 @@
 from pathlib import Path
 
 import pytest
-from harness2.core import tree as harness_tree
-from harness2.substrate.opencode import OPENCODE_SURFACE
 
+from assistant.h2 import harness2
 from assistant.harness_rules import REQUIRED_GUARDRAIL_LINES, load_tree, validate_tree
 
 
+harness_tree = harness2().tree
+OPENCODE_SURFACE = harness2().OPENCODE_SURFACE
 HARNESS_ROOT = Path(__file__).resolve().parents[1] / "harness"
 
 

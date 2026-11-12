@@ -3,8 +3,7 @@
 from pathlib import Path
 import re
 
-from harness2.core import tree as harness_tree
-from harness2.substrate.opencode import OPENCODE_SURFACE
+from assistant.h2 import harness2
 
 
 REQUIRED_GUARDRAIL_LINES: tuple[str, ...] = (
@@ -35,15 +34,22 @@ _SKILL_PATH = re.compile(r"skills/[a-z0-9-]+/SKILL\.md")
 
 def load_tree(root: Path) -> dict[str, str]:
     """Read every file, including unsupported paths and binary files for rejection."""
+    paths = sorted(root.rglob("*"))
+    for path in paths:
+        if path.is_symlink():
+            raise ValueError(
+                f"{path.relative_to(root)}: symlinks are not allowed in the Markdown harness"
+            )
     return {
         path.relative_to(root).as_posix(): path.read_text(encoding="utf-8", errors="replace")
-        for path in sorted(root.rglob("*"))
+        for path in paths
         if path.is_file()
     }
 
 
 def validate_tree(tree: dict[str, str]) -> None:
     """Report all local and Harness² problems together for the harness improver."""
+    h2 = harness2()
     problems: list[str] = []
     for path in sorted(tree):
         if path not in _ALLOWED_FILES and not _SKILL_PATH.fullmatch(path):
@@ -66,7 +72,7 @@ def validate_tree(tree: dict[str, str]) -> None:
                 "email drafts must stay in chat"
             )
 
-    chars = len(harness_tree.always_on_text(OPENCODE_SURFACE, tree))
+    chars = len(h2.tree.always_on_text(h2.OPENCODE_SURFACE, tree))
     if chars > 16_000:
         problems.append(
             f"always-on content is {chars} chars, over the 16000 cap; shorten the "
@@ -74,7 +80,7 @@ def validate_tree(tree: dict[str, str]) -> None:
         )
 
     try:
-        harness_tree.validate(OPENCODE_SURFACE, tree, allow_subagents=False)
+        h2.tree.validate(h2.OPENCODE_SURFACE, tree, allow_subagents=False)
     except ValueError as error:
         problems.append(str(error))
 
