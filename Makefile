@@ -25,7 +25,8 @@ install: install-agent
 
 render-plist:
 	@sed -e "s|__DWT_BIN__|$(CURDIR)/$(BIN)|g" -e "s|__DWT_DIR__|$(CURDIR)|g" -e "s|__DWT_LOGS__|$(STATE)/logs|g" \
-		deploy/$(LABEL).plist
+		deploy/$(LABEL).plist | awk -v dry_run="$(DRY_RUN)" \
+		'{ print; if (dry_run == "1" && /<string>serve<\/string>/) print "    <string>--dry-run</string>" }'
 
 install-agent: build
 	@test -f config.json || { echo "config.json missing: cp config.example.json config.json and edit it"; exit 1; }

@@ -120,8 +120,8 @@ func TestSendMail_202Only(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	})
 	err := c.SendMail(context.Background(), "admin@example.test", []string{"a@example.test"}, "s", "h", false)
-	if err == nil {
-		t.Fatal("a non-202 success must be an error")
+	if !errors.Is(err, ErrDeliveryUnknown) || !strings.Contains(err.Error(), "HTTP 200") {
+		t.Fatalf("HTTP 200: err = %v, want ErrDeliveryUnknown with status", err)
 	}
 	if err := c.SendMail(context.Background(), "admin@example.test", nil, "s", "h", false); err == nil {
 		t.Fatal("no recipients must be refused")
