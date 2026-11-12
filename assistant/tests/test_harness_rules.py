@@ -16,6 +16,10 @@ def tree():
     return load_tree(HARNESS_ROOT)
 
 
+def test_harness2_stub_paths_match_pinned_surface():
+    assert HARNESS2_STUB_PATHS == {path for path, _ in OPENCODE_SURFACE.stubs}
+
+
 def test_live_tree_passes():
     tree = load_tree(HARNESS_ROOT)
     assert validate_tree(tree) is None

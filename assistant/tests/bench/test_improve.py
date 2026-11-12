@@ -5,13 +5,14 @@ from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
 import shutil
+import sqlite3
 from types import SimpleNamespace
 
 import pytest
 
 from assistant.bench import improve
 from assistant.bench.judge import RUBRIC_DIMENSIONS, TurnScore
-from assistant.bench.seed import SeedTurn, SeededTurn
+from assistant.bench.seed import SeedTurn, SeededTurn, ensure_seed_snapshot
 from assistant.harness_rules import HARNESS2_STUB_PATHS, load_tree, strip_harness2_stubs, validate_tree
 from assistant.markers import load_markers
 from assistant.sessions import ToolCall, Turn
@@ -171,6 +172,27 @@ def test_no_real_turns_uses_seed_train_and_holdout(rig):
     assert kwargs["prop"].spec.model == rig.p.settings.model
     assert kwargs["prop"].spec.timeout == 1800
     assert kwargs["adapter"].seed_snapshot == rig.seed_db
+
+
+def test_existing_seed_without_snapshots_refreshes_evidence(rig, monkeypatch):
+    monkeypatch.setattr(improve, "ensure_seed_snapshot", ensure_seed_snapshot)
+    seed_bytes = rig.seed_db.read_bytes()
+    rig.p.dwt_state_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(rig.seed_db, rig.p.dwt_state_dir / "dwt.db")
+    with sqlite3.connect(rig.p.dwt_state_dir / "dwt.db") as db:
+        db.execute("UPDATE synthetic SET value='current'")
+    rig.snapshot.unlink()
+    assert not list(rig.p.snapshots_dir.iterdir())
+
+    directory = improve.run_improvement(rig.p, NOW)
+
+    assert (directory / "GATE").read_text().strip() == "passed"
+    snapshot = rig.p.snapshots_dir / "dwt-20261111T120000Z.db"
+    assert list(rig.p.snapshots_dir.iterdir()) == [snapshot]
+    with sqlite3.connect(snapshot) as db:
+        assert db.execute("SELECT value FROM synthetic").fetchall() == [("current",)]
+    assert rig.seed_db.read_bytes() == seed_bytes
+    assert set(read(directory / "evidence.json")) == {t.turn_id for t in rig.seeds}
 
 
 @pytest.mark.parametrize("real_state", ["none", "holdout", "used"])
