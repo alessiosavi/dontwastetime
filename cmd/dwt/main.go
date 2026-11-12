@@ -45,10 +45,11 @@ commands:
   mute-thread  <message-id|thread-key> stop tracking a thread, including future mail
   reopen       <message-id|thread-key> clear handled, snooze and mute; recompute
   doctor       health checks; exits non-zero on any red item
-  mcp          serve agent tools over stdio --operator <name>
+  mcp          serve agent tools over stdio --operator <name> [--now <RFC3339>]
   version      print the version
 
 common flags: --config (default $DWT_CONFIG or config.json), --state-dir, --env, --taxonomy
+mcp flag: --now fixes the clock for replays on a database copy
 `
 
 func main() {
@@ -65,13 +66,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	}
 	cmd, rest := args[0], args[1:]
 	switch cmd {
-	case "version":
-		fmt.Fprintf(stdout, "dwt %s\n", version)
-		return 0
-	case "help", "-h", "--help":
-		fmt.Fprint(stdout, usage)
-		return 0
-	case "serve", "sync", "classify", "digest", "explore", "eval", "mailboxes", "correct", "handled", "snooze", "mute-thread", "reopen", "doctor", "mcp":
+	case "serve", "sync", "classify", "digest", "explore", "eval", "mailboxes", "correct", "handled", "snooze", "mute-thread", "reopen", "doctor", "mcp", "version", "help", "-h", "--help":
 	default:
 		fmt.Fprintf(stderr, "dwt: unknown command %q\n%s", cmd, usage)
 		return 2
@@ -118,17 +113,44 @@ func dispatch(ctx context.Context, cmd string, args []string, stdout, stderr io.
 	model := fs.String("model", "", "eval run: override the configured model for this run")
 	evalOut := fs.String("out", "", "eval run: report directory (default: <state>/eval/runs)")
 	operator := fs.String("operator", "", "mcp: configured operator name (required)")
+	nowFlag := fs.String("now", "", "mcp: fixed clock (RFC3339) for replays on a database copy")
 	note := fs.String("note", "", "handled: optional audit note")
 	pos, err := parseArgs(fs, args)
 	if err != nil {
 		return errUsage
+	}
+	nowSet := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "now" {
+			nowSet = true
+		}
+	})
+	var fixed time.Time
+	if nowSet {
+		if cmd != "mcp" {
+			fmt.Fprintln(stderr, "--now is only supported by mcp; usage: dwt mcp --operator <name> [--now <RFC3339>] [common flags]")
+			return errUsage
+		}
+		fixed, err = time.Parse(time.RFC3339, *nowFlag)
+		if err != nil {
+			fmt.Fprintln(stderr, "--now must be RFC3339; usage: dwt mcp --operator <name> [--now <RFC3339>] [common flags]")
+			return errUsage
+		}
+	}
+	switch cmd {
+	case "version":
+		fmt.Fprintf(stdout, "dwt %s\n", version)
+		return nil
+	case "help", "-h", "--help":
+		fmt.Fprint(stdout, usage)
+		return nil
 	}
 	if cmd == "eval" && (len(pos) != 1 || pos[0] != "run" || *gold == "") {
 		fmt.Fprintln(stderr, "usage: dwt eval run --gold file.jsonl [--model name] [--out dir]")
 		return errUsage
 	}
 	if cmd == "mcp" && (*operator == "" || len(pos) != 0) {
-		fmt.Fprintln(stderr, "usage: dwt mcp --operator <name> [common flags]")
+		fmt.Fprintln(stderr, "usage: dwt mcp --operator <name> [--now <RFC3339>] [common flags]")
 		return errUsage
 	}
 	var digestAt time.Time
@@ -165,6 +187,9 @@ func dispatch(ctx context.Context, cmd string, args []string, stdout, stderr io.
 		return err
 	}
 	defer a.close()
+	if nowSet {
+		a.now = func() time.Time { return fixed }
+	}
 	if *initialDays > 0 {
 		a.cfg.InitialDays = *initialDays
 	}
@@ -176,7 +201,7 @@ func dispatch(ctx context.Context, cmd string, args []string, stdout, stderr io.
 	case "mcp":
 		err := serveMCP(ctx, a, *operator, os.Stdin, stdout)
 		if errors.Is(err, service.ErrUnknownOperator) {
-			fmt.Fprintln(stderr, "unknown operator; usage: dwt mcp --operator <configured-name> [common flags]")
+			fmt.Fprintln(stderr, "unknown operator; usage: dwt mcp --operator <configured-name> [--now <RFC3339>] [common flags]")
 			return errUsage
 		}
 		return err
