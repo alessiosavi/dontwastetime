@@ -32,6 +32,10 @@
       {
         "key": "personal",
         "title": "Posta personale"
+      },
+      {
+        "key": "admin.invoices",
+        "title": "Fatture"
       }
     ]
   },
@@ -60,6 +64,12 @@
         "mailbox": "amministrazione@example.test",
         "bucket": "personal",
         "bucket_title": "Posta personale",
+        "count": 1
+      },
+      {
+        "mailbox": "amministrazione@example.test",
+        "bucket": "admin.invoices",
+        "bucket_title": "Fatture",
         "count": 1
       }
     ],
@@ -228,6 +238,29 @@
           ],
           "rationale": "Comunicazione privata"
         }
+      },
+      {
+        "id": 904,
+        "thread": "cliente-preventivo",
+        "mailbox": "amministrazione@example.test",
+        "bucket": "admin.invoices",
+        "bucket_title": "Fatture",
+        "received_at": "2026-11-12T08:30:00Z",
+        "age": "1 ora",
+        "direction": "in",
+        "has_attachments": false,
+        "body_purged": false,
+        "trimmed": false,
+        "untrusted": {
+          "from": "acquisti@cliente.example.test",
+          "from_name": "Ufficio acquisti cliente",
+          "subject": "Richiesta preventivo per nuova fornitura",
+          "preview": "Buongiorno Operator, vorremmo un preventivo per una nuova fornitura di 20 pezzi.",
+          "to": [
+            "amministrazione@example.test"
+          ],
+          "rationale": "Classificata per errore tra le fatture"
+        }
       }
     ]
   },
@@ -313,6 +346,29 @@
             "amministrazione@example.test"
           ],
           "rationale": "Comunicazione privata"
+        }
+      },
+      {
+        "id": 904,
+        "thread": "cliente-preventivo",
+        "mailbox": "amministrazione@example.test",
+        "bucket": "admin.invoices",
+        "bucket_title": "Fatture",
+        "received_at": "2026-11-12T08:30:00Z",
+        "age": "1 ora",
+        "direction": "in",
+        "has_attachments": false,
+        "body_purged": false,
+        "trimmed": false,
+        "untrusted": {
+          "from": "acquisti@cliente.example.test",
+          "from_name": "Ufficio acquisti cliente",
+          "subject": "Richiesta preventivo per nuova fornitura",
+          "preview": "Buongiorno Operator, vorremmo un preventivo per una nuova fornitura di 20 pezzi.",
+          "to": [
+            "amministrazione@example.test"
+          ],
+          "rationale": "Classificata per errore tra le fatture"
         }
       }
     ]
@@ -403,6 +459,30 @@
             "amministrazione@example.test"
           ],
           "rationale": "Comunicazione privata"
+        }
+      },
+      {
+        "id": 904,
+        "thread": "cliente-preventivo",
+        "mailbox": "amministrazione@example.test",
+        "bucket": "admin.invoices",
+        "bucket_title": "Fatture",
+        "received_at": "2026-11-12T08:30:00Z",
+        "age": "1 ora",
+        "direction": "in",
+        "has_attachments": false,
+        "body_purged": false,
+        "trimmed": false,
+        "untrusted": {
+          "from": "acquisti@cliente.example.test",
+          "from_name": "Ufficio acquisti cliente",
+          "subject": "Richiesta preventivo per nuova fornitura",
+          "preview": "Buongiorno Operator, vorremmo un preventivo per una nuova fornitura di 20 pezzi.",
+          "to": [
+            "amministrazione@example.test"
+          ],
+          "rationale": "Classificata per errore tra le fatture",
+          "body": "Buongiorno Operator, siamo vostri clienti e vorremmo un preventivo per una nuova fornitura di 20 pezzi. Potete indicarci prezzo e tempi di consegna? Grazie, Ufficio acquisti."
         }
       }
     ],

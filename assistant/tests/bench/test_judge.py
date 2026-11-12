@@ -137,6 +137,45 @@ def test_unknown_reference_checked_on_rollout_copy(profile, bench_turn, tmp_path
     assert score.deterministic == ["unknown_reference"] and score.dims["fatti"] == 0
 
 
+def test_thread_lookup_uses_rollout_copy_and_shares_reference_cache(profile, bench_turn, tmp_path, monkeypatch):
+    from assistant.bench import judge
+
+    seed = SeedTurn(bench_turn.turn_id, "annulla", [], "snapshot",
+                    [{"tool": "reopen", "target": "thread-a"}], [], None, "train")
+    rollout = RolloutTurn(bench_turn.turn_id, "Fatto: riaperta #12. Vedi #12.",
+                          [ToolCall("dwt", "reopen", {"thread": "#12"}, True, "")], tmp_path / "run/t")
+    reads = []
+
+    class Client:
+        def __init__(self, p, *, state_dir, now):
+            assert p == profile and state_dir == rollout.run_dir / "dwt" and now == bench_turn.at
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            pass
+
+        def call(self, tool, args):
+            reads.append((tool, args))
+            return {"id": 12, "thread": "thread-a"}
+
+    monkeypatch.setattr(judge, "DwtClient", Client)
+    assert judge._deterministic(profile, bench_turn, rollout, seed) == []
+    assert reads == [("get_message", {"id": 12})]
+
+
+def test_thread_lookup_uses_seed_stub(profile, bench_turn, tmp_path, monkeypatch):
+    from assistant.bench import judge
+
+    seed = SeedTurn(bench_turn.turn_id, "annulla", [], "snapshot",
+                    [{"tool": "reopen", "target": "sample-novembre"}], [], "mailbox", "train")
+    rollout = RolloutTurn(bench_turn.turn_id, "Fatto: riaperta #901.",
+                          [ToolCall("dwt", "reopen", {"thread": "#901"}, True, "")], tmp_path / "run/t")
+    monkeypatch.setattr(judge, "DwtClient", lambda *a, **k: pytest.fail("stub must not read snapshot mail"))
+    assert judge._deterministic(profile, bench_turn, rollout, seed) == []
+
+
 @pytest.mark.parametrize("at", ["2026-11-12T09:00:00+00:00", "2026-11-11T23:30:00+00:00"])
 def test_evidence_uses_latest_snapshot_for_sent_reply(profile, bench_turn, bench_snapshot, monkeypatch, at):
     from assistant.bench import judge

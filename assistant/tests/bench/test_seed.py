@@ -81,7 +81,7 @@ def test_placeholder_grammar_resolves_and_skips_unresolvable(profile, tmp_path, 
     assert good.message == "chiudi #12 di synthetic"
     assert good.history == [("assistant", "Oggetto sintetico / t")]
     assert good.at == datetime(2026, 11, 12, 8, 30, tzinfo=timezone.utc)
-    assert expected_ops(good, good.seed) == Counter({Op("mark_handled", "12"): 1})
+    assert expected_ops(good, good.seed) == Counter({Op("mark_handled", 12): 1})
     assert good.seed.split == "train"
     assert ("search", {"query": "Sample fattura"}) in calls
     assert ("needs_reply", {"state": "due"}) in calls
@@ -108,6 +108,44 @@ def test_stub_seed_resolves_without_reading_real_mail(profile, tmp_path, monkeyp
     assert len(turns) == len(seeds)
     assert all(t.seed.stub for t in turns)
     assert all("{{" not in json.dumps(asdict(t), default=str) for t in turns)
+
+
+def test_misfiled_stub_seed_resolves(profile, tmp_path, monkeypatch):
+    from assistant.bench import seed as module
+    from assistant.bench.stub_dwt import StubDataset
+
+    snapshot = tmp_path / "dwt-20261112T083000Z.db"
+    with sqlite3.connect(snapshot):
+        pass
+    template = next(s for s in module.load_seed_turns() if s.id == "A10-non-fattura")
+    assert template.stub is not None
+    monkeypatch.setattr(module, "load_seed_turns", lambda: [template])
+    monkeypatch.setattr(module, "DwtClient", lambda *a, **k: pytest.fail("must use synthetic customer mail"))
+    [turn] = module.build_seed_turns(profile, snapshot)
+    assert turn.message == "non è una fattura, è un cliente: #904"
+    assert turn.seed.expect_ops == [{"tool": "relabel", "target": "904"}]
+
+    client = StubDataset(template.stub)
+    message = client.call("get_message", {"id": 904})
+    assert message["bucket"] == "admin.invoices"
+    assert message["thread"] == "cliente-preventivo"
+    assert message["untrusted"]["from"] == "acquisti@cliente.example.test"
+    assert message["untrusted"]["subject"].startswith("Richiesta preventivo")
+    assert "preventivo" in message["untrusted"]["body"]
+    assert message["method"] == "classifier" and isinstance(message["confidence"], float)
+    for tool, args in (("list_messages", {"bucket": "admin.invoices"}),
+                       ("search", {"query": "Richiesta preventivo"}),
+                       ("get_thread", {"thread": "#904"})):
+        result = client.call(tool, args)
+        [item] = result.get("items", result.get("messages"))
+        for key in ("id", "thread", "mailbox", "bucket", "received_at"):
+            assert item[key] == message[key]
+        for key in ("from", "subject", "preview"):
+            assert item["untrusted"][key] == message["untrusted"][key]
+        if tool == "get_thread":
+            assert item["untrusted"]["body"] == message["untrusted"]["body"]
+        else:
+            assert "body" not in item["untrusted"]
 
 
 def test_bench_cli_group_has_help_without_loading_profile(monkeypatch, capsys):

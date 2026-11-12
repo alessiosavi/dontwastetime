@@ -95,11 +95,11 @@ def _scores(text: str) -> tuple[dict[str, float], str] | None:
 def _deterministic(p: Profile, turn: Turn, rollout: RolloutTurn, seed: SeedTurn | None) -> list[str]:
     with ExitStack() as stack:
         client = None
-        known = {}
+        messages = {}
 
-        def known_ids(identifier: int) -> bool:
+        def message_for(identifier: int) -> dict | None:
             nonlocal client
-            if identifier not in known:
+            if identifier not in messages:
                 if client is None:
                     if seed and seed.stub:
                         from assistant.bench.stub_dwt import StubDataset
@@ -109,12 +109,17 @@ def _deterministic(p: Profile, turn: Turn, rollout: RolloutTurn, seed: SeedTurn 
                         client = stack.enter_context(DwtClient(p, state_dir=rollout.run_dir / "dwt", now=turn.at))
                 try:
                     result = client.call("get_message", {"id": identifier})
-                    known[identifier] = result.get("id") == identifier
+                    messages[identifier] = result if result.get("id") == identifier else None
                 except (DwtError, ValueError):
-                    known[identifier] = False
-            return known[identifier]
+                    messages[identifier] = None
+            return messages[identifier]
 
-        return check_turn(turn, rollout, seed=seed, known_ids=known_ids)
+        def thread_of(identifier: int) -> str | None:
+            message = message_for(identifier)
+            return message.get("thread") if message is not None else None
+
+        return check_turn(turn, rollout, seed=seed, known_ids=lambda n: message_for(n) is not None,
+                          thread_of=thread_of)
 
 
 def judge_turn(

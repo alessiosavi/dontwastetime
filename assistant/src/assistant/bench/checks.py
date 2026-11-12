@@ -27,7 +27,7 @@ REFERENCE_RE = re.compile(r"#(\d+)\b")
 @dataclass(frozen=True)
 class Op:
     tool: str
-    target: str
+    target: str | int
 
 
 @dataclass
@@ -42,30 +42,50 @@ def _tool_name(name: str) -> str:
     return name.removeprefix("dwt_").removeprefix("notes_")
 
 
-def _target(args: dict) -> str:
-    return str(next((args[key] for key in ("inbound_id", "id", "thread") if key in args), ""))
+def _target(args: dict, *, thread_of: Callable[[int], str | None] | None = None) -> str | int:
+    for key in ("inbound_id", "id", "thread"):
+        if key not in args:
+            continue
+        target = str(args[key])
+        if key != "thread":
+            try:
+                return int(target)
+            except ValueError:
+                return target
+        if thread_of is not None and re.fullmatch(r"#?[0-9]+", target):
+            return thread_of(int(target.removeprefix("#"))) or target
+        return target
+    return ""
 
 
-def ops_of(calls: list[ToolCall]) -> Counter[Op]:
+def ops_of(calls: list[ToolCall], *, thread_of: Callable[[int], str | None] | None = None) -> Counter[Op]:
     return Counter(
-        Op(call.tool, "" if call.server == "notes" else _target(call.args))
+        Op(call.tool, "" if call.server == "notes" else _target(call.args, thread_of=thread_of))
         for call in calls if call.ok and (
             (call.server == "dwt" and call.tool in TRIAGE_TOOLS)
             or (call.server == "notes" and call.tool == "remember"))
     )
 
 
-def expected_ops(turn: Turn, seed: SeedTurn | None) -> Counter[Op] | None:
+def expected_ops(turn: Turn, seed: SeedTurn | None, *,
+                 thread_of: Callable[[int], str | None] | None = None) -> Counter[Op] | None:
     if seed is not None:
-        return Counter(Op(_tool_name(item["tool"]), "" if _tool_name(item["tool"]) == "remember"
-                          else str(item["target"])) for item in seed.expect_ops)
+        expected = Counter()
+        for item in seed.expect_ops:
+            tool = _tool_name(item["tool"])
+            # Seeds name the primary operation target, without call arguments.
+            key = {"mark_handled": "inbound_id", "snooze": "inbound_id", "relabel": "id"}.get(tool, "thread")
+            target = "" if tool == "remember" else _target({key: item["target"]}, thread_of=thread_of)
+            expected[Op(tool, target)] += 1
+        return expected
     if turn.next_message and NEGATIVE_RE.search(turn.next_message):
         return None
-    original = ops_of(turn.tool_calls)
+    original = ops_of(turn.tool_calls, thread_of=thread_of)
     targets = {op.target for op in original if op.tool != "remember"}
-    targets.update(str(call.args["thread"]) for call in turn.tool_calls
+    targets.update(_target({"thread": call.args["thread"]}, thread_of=thread_of) for call in turn.tool_calls
                    if call.ok and call.server == "dwt" and call.tool in TRIAGE_TOOLS and "thread" in call.args)
-    if any(call.ok and call.server == "dwt" and call.tool == "reopen" and _target(call.args) in targets
+    if any(call.ok and call.server == "dwt" and call.tool == "reopen"
+           and _target(call.args, thread_of=thread_of) in targets
            for call in turn.following_tool_calls):
         return None
     return original
@@ -98,14 +118,19 @@ def _claims(reply: str):
                 yield tool, sentence
 
 
-def _claimed_not_done(reply: str, actual: Counter[Op]) -> bool:
+def _claimed_not_done(reply: str, actual: Counter[Op], *,
+                      thread_of: Callable[[int], str | None] | None = None) -> bool:
     available = actual.copy()
     for tool, sentence in _claims(reply):
         refs = REFERENCE_RE.findall(sentence) if tool != "remember" else []
         if refs:
             for target in refs:
-                op = next((op for op in available if op.tool == tool and op.target in (target, "#" + target)
+                op = next((op for op in available if op.tool == tool and op.target in (int(target), target, "#" + target)
                            and available[op]), None)
+                if op is None and thread_of is not None:
+                    thread = thread_of(int(target))
+                    op = next((op for op in available if op.tool == tool and op.target == thread
+                               and available[op]), None)
                 # Thread-key operations can legitimately cite an inbound #id.
                 if op is None and tool in ("reopen", "mute_thread"):
                     op = next((op for op in available if op.tool == tool and available[op]), None)
@@ -135,16 +160,17 @@ def _personal_subjects(value):
 
 
 def check_turn(turn: Turn, rollout: RolloutTurn, *, seed: SeedTurn | None,
-               known_ids: Callable[[int], bool]) -> list[str]:
-    expected = expected_ops(turn, seed)
-    actual = ops_of(rollout.tool_calls)
+               known_ids: Callable[[int], bool],
+               thread_of: Callable[[int], str | None] | None = None) -> list[str]:
+    expected = expected_ops(turn, seed, thread_of=thread_of)
+    actual = ops_of(rollout.tool_calls, thread_of=thread_of)
     failures = []
     forbidden = {_tool_name(name) for name in seed.forbid_tools} if seed else set()
     if (expected is not None and actual - expected) or any(op.tool in forbidden for op in actual):
         failures.append("unrequested_action")
     if expected is not None and expected - actual:
         failures.append("missing_action")
-    if _claimed_not_done(rollout.reply, actual):
+    if _claimed_not_done(rollout.reply, actual, thread_of=thread_of):
         failures.append("claimed_not_done")
     # notes_remember/list_notes emit real note IDs using the same # notation as
     # mail. They are grounded in tool evidence, not in the mailbox's ID space.

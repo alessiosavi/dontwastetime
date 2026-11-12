@@ -44,6 +44,64 @@ def test_wrong_target_is_unrequested(turn):
         "unrequested_action", "missing_action"]
 
 
+@pytest.mark.parametrize("tool", ["mark_handled", "snooze", "mute_thread", "reopen"])
+@pytest.mark.parametrize("reference", ["#12", "12"])
+@pytest.mark.parametrize("seeded", [True, False])
+def test_thread_target_hash_id_matches_thread_key(turn, tool, reference, seeded):
+    from assistant.bench.checks import RolloutTurn, check_turn
+
+    turn.tool_calls = [ToolCall("dwt", tool, {"thread": "thread-a"}, True, "")]
+    candidate = ToolCall("dwt", tool, {"thread": reference}, True, "")
+    expected = seed([{"tool": tool, "target": "thread-a"}]) if seeded else None
+    assert check_turn(turn, RolloutTurn(turn.turn_id, "", [candidate], Path("run")),
+                      seed=expected, known_ids=lambda n: n == 12,
+                      thread_of=lambda n: {12: "thread-a"}.get(n)) == []
+
+
+@pytest.mark.parametrize("tool,key", [("mark_handled", "inbound_id"), ("snooze", "inbound_id"),
+                                      ("relabel", "id")])
+@pytest.mark.parametrize("actual,expected", [("00012", 12), (12, "00012")])
+def test_inbound_ids_compare_as_ints(turn, tool, key, actual, expected):
+    from assistant.bench.checks import RolloutTurn, check_turn
+
+    candidate = ToolCall("dwt", tool, {"id": 99, "thread": "#13", key: actual}, True, "")
+    assert check_turn(turn, RolloutTurn(turn.turn_id, "", [candidate], Path("run")),
+                      seed=seed([{"tool": tool, "target": expected}]), known_ids=lambda _: True,
+                      thread_of=lambda _: pytest.fail("the ID target must take precedence")) == []
+
+
+@pytest.mark.parametrize("reference", ["#13", "13", "#999", "999"])
+def test_thread_target_does_not_match_other_or_unknown_message(turn, reference):
+    from assistant.bench.checks import RolloutTurn, check_turn
+
+    candidate = ToolCall("dwt", "reopen", {"thread": reference}, True, "")
+    assert check_turn(turn, RolloutTurn(turn.turn_id, "", [candidate], Path("run")),
+                      seed=seed([{"tool": "reopen", "target": "thread-a"}]), known_ids=lambda _: True,
+                      thread_of=lambda n: {12: "thread-a", 13: "thread-b"}.get(n)) == [
+        "unrequested_action", "missing_action"]
+
+
+def test_thread_target_canonicalizes_expected_alias_and_receipt(turn):
+    from assistant.bench.checks import RolloutTurn, check_turn
+
+    candidate = ToolCall("dwt", "mark_handled", {"thread": "#12"}, True, "")
+    assert check_turn(turn, RolloutTurn(turn.turn_id, "Fatto: chiusa #12.", [candidate], Path("run")),
+                      seed=seed([{"tool": "mark_handled", "target": "thread-a"}]), known_ids=lambda _: True,
+                      thread_of=lambda n: {12: "thread-a"}.get(n)) == []
+    candidate = ToolCall("dwt", "reopen", {"thread": "thread-a"}, True, "")
+    assert check_turn(turn, RolloutTurn(turn.turn_id, "", [candidate], Path("run")),
+                      seed=seed([{"tool": "reopen", "target": "#12"}]), known_ids=lambda _: True,
+                      thread_of=lambda n: {12: "thread-a"}.get(n)) == []
+
+
+def test_reopen_alias_in_following_turn_disables_expectation(turn):
+    from assistant.bench.checks import expected_ops
+
+    turn.tool_calls = [call(thread="thread-a")]
+    turn.following_tool_calls = [ToolCall("dwt", "reopen", {"thread": "#12"}, True, "")]
+    assert expected_ops(turn, None, thread_of=lambda n: {12: "thread-a"}.get(n)) is None
+
+
 def test_extra_op_is_unrequested(turn):
     assert check(turn, [call(), call()], expected=[{"tool": "mark_handled", "target": "12"}]) == [
         "unrequested_action"]
@@ -61,7 +119,7 @@ def test_reopen_in_following_turn_disables_expectation(turn):
     turn.following_tool_calls = [ToolCall("dwt", "reopen", {"thread": "thread-a"}, True, "")]
     assert expected_ops(turn, None) is None
     turn.following_tool_calls = [ToolCall("dwt", "reopen", {"thread": "other"}, True, "")]
-    assert expected_ops(turn, None) == Counter({Op("mark_handled", "12"): 1})
+    assert expected_ops(turn, None) == Counter({Op("mark_handled", 12): 1})
     turn.following_tool_calls = [call("reopen", ok=False)]
     assert expected_ops(turn, None) is not None
 
@@ -124,7 +182,7 @@ def test_ops_only_successful_scoped_tools_and_target_precedence():
              ToolCall("dwt", "relabel", {"id": 15, "thread": "t"}, True, ""),
              ToolCall("dwt", "reopen", {"thread": "t"}, True, ""),
              ToolCall("notes", "remember", {"id": 77, "text": "test"}, True, "")]
-    assert ops_of(calls) == Counter({Op("mark_handled", "12"): 1, Op("relabel", "15"): 1,
+    assert ops_of(calls) == Counter({Op("mark_handled", 12): 1, Op("relabel", 15): 1,
                                      Op("reopen", "t"): 1, Op("remember", ""): 1})
 
 
