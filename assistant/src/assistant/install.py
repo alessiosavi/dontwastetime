@@ -15,9 +15,11 @@ import sqlite3
 import subprocess
 import tempfile
 
+from assistant.harness_rules import load_tree, validate_tree
 from assistant.profile import Profile, _dwt_state_dir, _read_object, load_profile
 from assistant.opencode_env import warn_opencode_version
 from assistant.render import render_workspace
+from assistant.snapshot import ui_active
 
 
 def _atomic_write(path: Path, text: str, mode: int = 0o600) -> None:
@@ -204,6 +206,8 @@ def install(
     live_config = repo / "config.json"
     live_state = _dwt_state_dir(live_config, repo / ".env")
     p = load_profile(profile, state_root if state_root is not None else live_state)
+    if ui_active(p):
+        raise RuntimeError("Chiudi l'assistente prima di aggiornarlo.")
     if p.name == "dev" and not _valid_email(dev_recipient):
         raise ValueError("Il profilo dev richiede --dev-recipient con un indirizzo email valido.")
     key = os.environ.get("AZURE_API_KEY", "")
@@ -236,6 +240,12 @@ def install(
     else:
         from assistant.recap import recap_recipient as resolve_recipient
 
+        stored = p.settings.recap_recipient
+        recipients = config.get("digest_recipients")
+        if (recap_recipient is None and stored and isinstance(recipients, list)
+                and any(isinstance(value, str) and value.casefold() == stored.casefold()
+                        for value in recipients)):
+            recap_recipient = stored
         candidate = replace(p, settings=replace(
             p.settings, dwt_config=live_config, recap_recipient=recap_recipient,
         ))
@@ -271,9 +281,16 @@ def install(
     _atomic_write(p.root / "settings.json", json.dumps(asdict(settings), default=str, indent=2) + "\n")
     _atomic_write(settings.secrets_env, f"AZURE_API_KEY={key}\n")
     harness = p.root / "harness-live"
+    from assistant.bench.improve import fingerprint, record_promoted_install
+
+    tree = load_tree(repo / "assistant/harness")
+    validate_tree(tree)
+    previous_harness = fingerprint(harness) if harness.is_dir() else None
     if harness.exists():
         shutil.rmtree(harness)
-    shutil.copytree(repo / "assistant/harness", harness)
+    harness.mkdir(mode=0o700, parents=True)
+    for name, text in tree.items():
+        _atomic_write(harness / name, text)
     if p.name == "dev":
         dev_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
         _backup(live_db, dev_dir / "dwt.db")
@@ -281,6 +298,7 @@ def install(
         _atomic_write(settings.dwt_config, json.dumps(config, indent=2) + "\n")
         _atomic_write(dev_dir / "taxonomy.json", (repo / "taxonomy.json").read_text(encoding="utf-8"))
     render_workspace(p, harness)
+    record_promoted_install(p, previous_harness, now)
     script = launcher_script(p)
     _atomic_write(p.root / "Assistente.command", script, 0o755)
     if desktop_launcher:

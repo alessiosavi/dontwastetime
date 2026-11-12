@@ -1,6 +1,7 @@
 """Rendered workspace contracts; real model calls are opt-in only."""
 
 from dataclasses import replace
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 import json
 import os
@@ -9,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import time
+from threading import Barrier
 from types import SimpleNamespace
 
 import pytest
@@ -165,6 +167,19 @@ def test_config_rejects_naive_now(profile):
 
     with pytest.raises(ValueError, match="timezone|aware"):
         opencode_config(profile, profile.workspace, now=datetime(2026, 11, 12, 9))
+
+
+def test_rerender_with_disposable_notes_keeps_the_disposable_link(profile, tmp_path):
+    from assistant.render import render_workspace
+
+    notes = tmp_path / "disposable-notes"
+    workspace = tmp_path / "replay"
+    render_workspace(profile, HARNESS_ROOT, workspace, notes_dir=notes)
+    (notes / "notes.md").write_text("replay note")
+    render_workspace(profile, HARNESS_ROOT, workspace, notes_dir=notes)
+    assert (workspace / "memory").resolve() == notes
+    assert (workspace / "memory/notes.md").read_text() == "replay note"
+    assert not profile.memory_dir.exists()
 
 
 def test_rerender_keeps_memory(profile):
@@ -415,6 +430,26 @@ def test_ops_workspaces_are_fresh_and_prune_only_old_directories(profile):
     assert not old.exists()
     assert recent.is_dir()
     assert newest.is_dir()
+
+
+def test_concurrent_ops_workspace_cleanup_is_safe(profile, monkeypatch):
+    from assistant import render
+
+    old = render.ops_workspace(profile, dwt_read_tools=False)
+    stale_time = time.time() - 86_401
+    os.utime(old, (stale_time, stale_time))
+    barrier, remove = Barrier(2), shutil.rmtree
+
+    def concurrent_remove(path, *args, **kwargs):
+        if path == old:
+            barrier.wait(timeout=5)
+        return remove(path, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "rmtree", concurrent_remove)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        workspaces = list(pool.map(lambda _: render.ops_workspace(profile, dwt_read_tools=False), range(2)))
+    assert len(set(workspaces)) == 2 and all((path / "opencode.json").is_file() for path in workspaces)
+    assert not old.exists()
 
 
 @pytest.mark.integration

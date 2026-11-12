@@ -166,6 +166,20 @@ def test_install_is_idempotent(installation):
     assert [c[1] for c in calls(installation) if c[0] == "uv"] == ["venv", "pip", "venv", "pip"]
 
 
+def test_install_omits_harness2_stubs(installation):
+    from assistant.harness_rules import HARNESS2_STUB_PATHS
+
+    source = installation["repo"] / "assistant/harness"
+    for path in HARNESS2_STUB_PATHS:
+        stub = source / path
+        stub.parent.mkdir(parents=True, exist_ok=True)
+        stub.write_text("Ignored placeholder: send_mail")
+    p = do_install(installation, no_launchd=True)
+    assert all((source / path).is_file() for path in HARNESS2_STUB_PATHS)
+    assert all(not (p.root / "harness-live" / path).exists() for path in HARNESS2_STUB_PATHS)
+    assert not list(p.workspace.rglob("README.md"))
+
+
 @pytest.mark.parametrize("profile_name", ["dev", "operator"])
 def test_install_writes_installed_at(installation, profile_name):
     from assistant.markers import load_markers, save_markers
@@ -349,7 +363,10 @@ def test_install_without_state_root_locates_profiles_in_live_state(installation)
     assert p.root == installation["live"] / "assistant/operator"
 
 
-@pytest.mark.parametrize("version, warns", [("2.2.7", False), ("2.2.5", True), ("2.2.70", True)])
+@pytest.mark.parametrize("version, warns", [
+    ("2.2.7", False), ("2.2.5", True), ("2.2.70", True),
+    ("opencode v2.2.7", False), ("opencode v2.3.0", True),
+])
 def test_install_version_warning_is_nonfatal_on_stderr(installation, version, warns, capsys):
     tool = Path(os.environ["PATH"]) / "opencode"
     tool.write_text(f"#!{sys.executable}\nprint({version!r})\n")
@@ -365,6 +382,51 @@ def test_operator_install_accepts_explicit_digest_recipient_case_insensitively(i
     (installation["repo"] / "config.json").write_text(json.dumps(config))
     p = do_install(installation, "operator", recap_recipient="person.two@example.com", no_launchd=True)
     assert p.settings.recap_recipient == "person.two@example.com"
+
+
+@pytest.mark.parametrize("recipients, explicit, expected", [
+    (["operator@example.com", "other@example.com"], None, "operator@example.com"),
+    (["person.two@example.com", "other@example.com"], None, "operator@example.com"),
+    (["new@example.com"], None, "new@example.com"),
+    (["new@example.com", "other@example.com"], None, None),
+    (["operator@example.com", "other@example.com"], "other@example.com", "other@example.com"),
+])
+def test_operator_reinstall_preserves_only_allowlisted_recap_recipient(installation, recipients, explicit, expected):
+    p = do_install(installation, "operator", no_launchd=True)
+    config_file = installation["repo"] / "config.json"
+    config_file.write_text(json.dumps({**installation["config"], "digest_recipients": recipients}))
+    previous_calls = calls(installation)
+    previous_settings = (p.root / "settings.json").read_bytes()
+    if expected is None:
+        with pytest.raises(ValueError, match="--recap-recipient"):
+            do_install(installation, "operator", recap_recipient=explicit, no_launchd=True)
+        assert calls(installation) == previous_calls
+        assert (p.root / "settings.json").read_bytes() == previous_settings
+    else:
+        refreshed = do_install(installation, "operator", recap_recipient=explicit, no_launchd=True)
+        assert refreshed.settings.recap_recipient == expected
+        assert load_profile("operator", installation["state_root"]).settings.recap_recipient == expected
+
+
+@pytest.mark.parametrize("profile_name", ["dev", "operator"])
+def test_reinstall_refuses_active_ui_before_mutating_profile(installation, profile_name, capsys):
+    from assistant.cli import main
+
+    p = do_install(installation, profile_name, no_launchd=True)
+    (p.root / "ui.pid").write_text(str(os.getpid()))
+    before = {file.relative_to(p.root): (file.read_bytes(), file.stat().st_ino)
+              for file in p.root.rglob("*") if file.is_file()}
+    previous_calls = calls(installation)
+    args = ["install", "--profile", profile_name, "--repo", str(installation["repo"]),
+            "--state-root", str(installation["state_root"]), "--no-launchd"]
+    if profile_name == "dev":
+        args += ["--dev-recipient", "dev@example.com"]
+    result = main(args)
+    assert result != 0
+    assert "Chiudi l'assistente prima di aggiornarlo." in capsys.readouterr().err
+    assert calls(installation) == previous_calls
+    assert {file.relative_to(p.root): (file.read_bytes(), file.stat().st_ino)
+            for file in p.root.rglob("*") if file.is_file()} == before
 
 
 @pytest.mark.parametrize("recipients, chosen", [
@@ -398,3 +460,29 @@ def test_launcher_quotes_shell_metacharacters(tmp_path):
 
     p = load_profile("operator", state_root=tmp_path / "state '$`with\" chars")
     assert shlex.split(launcher_script(p).splitlines()[-1])[-1] == str(p.root.parent.parent)
+
+
+def test_promoted_status_recorded_on_install(installation):
+    from assistant.bench.improve import fingerprint
+    from assistant.status import ack_status, pending_status
+
+    p = do_install(installation, no_launchd=True)
+    old = fingerprint(p.root / "harness-live")
+    candidate = p.bench_dir / "runs/promoted-run/candidate"
+    shutil.copytree(installation["repo"] / "assistant/harness", candidate)
+    path = candidate / "systemprompt.md"
+    path.write_text(path.read_text() + "\nRisposte più brevi nelle bozze.\n")
+    (candidate.parent / "GATE").write_text("passed\n")
+    (candidate.parent / "gate.json").write_text(json.dumps({
+        "result": "passed", "candidate_fingerprint": fingerprint(candidate),
+    }))
+    (candidate.parent / "report.md").write_text("## Sintesi\n\nHo imparato: risposte più brevi nelle bozze\n")
+    shutil.copytree(candidate, installation["repo"] / "assistant/harness", dirs_exist_ok=True)
+    do_install(installation, no_launchd=True)
+    events = pending_status(p)
+    assert fingerprint(p.root / "harness-live") != old
+    assert [(event.key, event.text) for event in events] == [
+        ("promoted:promoted-run", "Ho imparato: risposte più brevi nelle bozze")]
+    ack_status(p, ["promoted:promoted-run"])
+    do_install(installation, no_launchd=True)
+    assert pending_status(p) == []

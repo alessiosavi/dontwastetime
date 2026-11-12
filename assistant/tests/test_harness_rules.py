@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 
 from assistant.h2 import harness2
-from assistant.harness_rules import REQUIRED_GUARDRAIL_LINES, load_tree, validate_tree
+from assistant.harness_rules import HARNESS2_STUB_PATHS, REQUIRED_GUARDRAIL_LINES, load_tree, validate_tree
 
 
 harness_tree = harness2().tree
@@ -74,7 +74,6 @@ def test_always_on_cap(tree, size):
     "notes.txt",
     "other.md",
     "tool_descriptions/other.md",
-    "skills/README.md",
     "skills/triage/notes.md",
     "skills/Triage/SKILL.md",
     "skills/tri_age/SKILL.md",
@@ -88,6 +87,18 @@ def test_executable_surface_rejected(tree, path):
     with pytest.raises(ValueError) as error:
         validate_tree(tree)
 
+    assert path in str(error.value)
+
+
+@pytest.mark.parametrize("path", [
+    "plugin/extra.md", "plugin/x.ts", "plugin/nested/README.md", "plugin/readme.md",
+    "scripts/extra.md", "sub_agents/extra.md", "skills/triage/extra.py",
+])
+def test_other_plugin_files_still_rejected(tree, path):
+    tree.update(dict.fromkeys(HARNESS2_STUB_PATHS, "send_mail"))
+    tree[path] = "Not a placeholder."
+    with pytest.raises(ValueError) as error:
+        validate_tree(tree)
     assert path in str(error.value)
 
 

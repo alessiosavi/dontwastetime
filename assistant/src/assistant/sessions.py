@@ -77,8 +77,9 @@ def _text(content: list[dict]) -> str:
     return "\n".join(part.get("text", "") for part in content if part.get("type") == "text")
 
 
-def _tool_call(part: dict) -> ToolCall:
-    server, separator, tool = part["name"].partition("_")
+def tool_call_from_part(part: dict) -> ToolCall:
+    """Normalize export parts (`name`) and run tool_use parts (`tool`) alike."""
+    server, separator, tool = (part.get("name") or part["tool"]).partition("_")
     if not separator:
         server, tool = "", server
     state = part.get("state", {})
@@ -126,7 +127,7 @@ def turns_from_export(path: Path, profile: str) -> list[Turn]:
             if text:
                 current.reply = "\n".join(filter(None, (current.reply, text)))
             current.tool_calls.extend(
-                _tool_call(part) for part in message.get("content", []) if part["type"] == "tool"
+                tool_call_from_part(part) for part in message.get("content", []) if part["type"] == "tool"
             )
     for current, following in zip(turns, turns[1:]):
         current.next_message = following.message

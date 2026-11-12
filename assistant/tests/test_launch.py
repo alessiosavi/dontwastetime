@@ -1,6 +1,7 @@
 """Launch a real fake HTTP child, with no OpenCode, browser or credentials."""
 
 from dataclasses import replace
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -44,7 +45,7 @@ def ui(tmp_path, fake_tools):
     return p, record, opened
 
 
-def fake_server(ui, mode="normal", version="2.2.7"):
+def fake_server(ui, mode="normal", version="opencode v2.2.7"):
     p, record, _ = ui
     Path(p.settings.opencode_bin).write_text(
         f"#!{sys.executable}\n" + '''
@@ -82,9 +83,9 @@ http.server.HTTPServer(('127.0.0.1', port), Handler).serve_forever()
 ''')
 
 
-def start_launcher(p, *extra):
+def start_launcher(p, *extra, setup=""):
     # A fixed test password lets the parent check every captured byte for leakage.
-    script = (
+    script = setup + "\n" + (
         "import secrets; secrets.token_urlsafe = lambda *args: 'ephemeral-test-password'; "
         "from assistant.cli import main; import sys; sys.exit(main(sys.argv[1:]))"
     )
@@ -185,7 +186,90 @@ def test_second_launch_reopens_running_ui_without_rendering(ui):
         child.communicate(timeout=8)
 
 
-@pytest.mark.parametrize("version, warns", [("2.2.7", False), ("2.2.5", True), ("2.2.70", True)])
+def test_concurrent_launch_waits_for_metadata_and_holds_lock(ui):
+    p, record, opened = ui
+    fake_server(ui)
+    blocked, release, second_started = (p.root / name for name in ("render-blocked", "release-render", "second-started"))
+    setup = f'''
+import importlib, pathlib, time
+runtime = importlib.import_module('assistant.launch')
+original_render = runtime.render_workspace
+def delayed_render(*args, **kwargs):
+    pathlib.Path({str(blocked)!r}).touch()
+    deadline = time.monotonic() + 8
+    while not pathlib.Path({str(release)!r}).exists():
+        if time.monotonic() >= deadline:
+            raise RuntimeError('test render was never released')
+        time.sleep(0.01)
+    return original_render(*args, **kwargs)
+runtime.render_workspace = delayed_render
+'''
+    child = start_launcher(p, setup=setup)
+    second = None
+    try:
+        wait_for(blocked.exists, child)
+        assert not (p.root / "ui.pid").exists()
+        with (p.root / "ui.lock").open("a") as lock:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        second = start_launcher(p, setup=f"from pathlib import Path; Path({str(second_started)!r}).touch()")
+        wait_for(second_started.exists, second)
+        time.sleep(0.2)
+        assert second.poll() is None
+        assert not record.exists() and not (p.root / "ui.json").exists()
+        release.touch()
+        wait_for(opened.exists, child)
+        read_ready(child)
+        stdout, stderr = second.communicate(timeout=8)
+        assert second.returncode == 0, stderr
+        assert "L'assistente è già aperto nel browser." in stdout
+        events = [json.loads(line) for line in record.read_text().splitlines()]
+        assert len([event for event in events if "argv" in event]) == 1
+        with (p.root / "ui.lock").open("a") as lock:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert child.poll() is None
+    finally:
+        release.touch()
+        for launcher in (second, child):
+            if launcher is not None and launcher.poll() is None:
+                launcher.terminate()
+                launcher.communicate(timeout=8)
+    with (p.root / "ui.lock").open("a") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def test_launch_lock_contention_reports_startup_after_five_seconds(ui):
+    p, record, opened = ui
+    fake_server(ui, "exit")
+    render_workspace(p, p.root / "harness-live")
+    sentinel = p.workspace / "keep-during-startup"
+    sentinel.write_text("preserve workspace")
+    inode = p.workspace.stat().st_ino
+    with (p.root / "ui.lock").open("a") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        started = time.monotonic()
+        child = start_launcher(p)
+        try:
+            stdout, stderr = child.communicate(timeout=8)
+            elapsed = time.monotonic() - started
+            assert child.returncode == 0, stderr
+            assert "L'assistente si sta già aprendo." in stdout
+            assert 5 <= elapsed < 8
+            assert not record.exists() and not opened.exists()
+            assert p.workspace.stat().st_ino == inode
+            assert sentinel.read_text() == "preserve workspace"
+            assert not (p.root / "ui.pid").exists()
+        finally:
+            if child.poll() is None:
+                child.terminate()
+                child.communicate(timeout=8)
+
+
+@pytest.mark.parametrize("version, warns", [
+    ("2.2.7", False), ("2.2.5", True), ("2.2.70", True),
+    ("opencode v2.2.7", False), ("opencode v2.3.0", True),
+])
 def test_launch_version_warning_is_nonfatal_on_stderr(ui, version, warns):
     p, _, opened = ui
     fake_server(ui, version=version)

@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import re
+import sys
 
 from assistant.h2 import harness2
 
@@ -31,24 +32,39 @@ _ALLOWED_FILES = frozenset({
 })
 _SKILL_PATH = re.compile(r"skills/[a-z0-9-]+/SKILL\.md")
 
+# Do not initialize Harness² here: the worker configures it after taking its lock.
+_surface = getattr(sys.modules.get("harness2.substrate.opencode"), "OPENCODE_SURFACE", None)
+HARNESS2_STUB_PATHS = frozenset(path for path, _ in getattr(_surface, "stubs", ())) or frozenset({
+    "plugin/README.md",
+    "scripts/README.md",
+    "skills/README.md",
+    "sub_agents/README.md",
+})
+
+
+def strip_harness2_stubs(tree: dict[str, str]) -> dict[str, str]:
+    """Ignore only Harness²'s README placeholders, regardless of their content."""
+    return {path: text for path, text in tree.items() if path not in HARNESS2_STUB_PATHS}
+
 
 def load_tree(root: Path) -> dict[str, str]:
-    """Read every file, including unsupported paths and binary files for rejection."""
+    """Read all non-stub files, including unsupported paths and binary files for rejection."""
     paths = sorted(root.rglob("*"))
     for path in paths:
         if path.is_symlink():
             raise ValueError(
                 f"{path.relative_to(root)}: symlinks are not allowed in the Markdown harness"
             )
-    return {
+    return strip_harness2_stubs({
         path.relative_to(root).as_posix(): path.read_text(encoding="utf-8", errors="replace")
         for path in paths
         if path.is_file()
-    }
+    })
 
 
 def validate_tree(tree: dict[str, str]) -> None:
     """Report all local and Harness² problems together for the harness improver."""
+    tree = strip_harness2_stubs(tree)
     h2 = harness2()
     problems: list[str] = []
     for path in sorted(tree):
