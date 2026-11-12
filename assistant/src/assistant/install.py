@@ -4,6 +4,7 @@ from contextlib import closing
 from copy import deepcopy
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -208,112 +209,124 @@ def install(
     p = load_profile(profile, state_root if state_root is not None else live_state)
     if ui_active(p):
         raise RuntimeError("Chiudi l'assistente prima di aggiornarlo.")
-    if p.name == "dev" and not _valid_email(dev_recipient):
-        raise ValueError("Il profilo dev richiede --dev-recipient con un indirizzo email valido.")
-    key = os.environ.get("AZURE_API_KEY", "")
-    if not key.strip() or "\n" in key or "\r" in key:
-        raise ValueError("Imposta AZURE_API_KEY nell'ambiente prima dell'installazione (una sola riga).")
-    dwt = repo / "bin/dwt"
-    if not dwt.is_file():
-        raise FileNotFoundError("bin/dwt non trovato: esegui make build nel repository.")
-    opencode = shutil.which("opencode")
-    if not opencode:
-        raise FileNotFoundError("opencode non trovato nel PATH.")
-    uv = shutil.which("uv")
-    if not uv:
-        raise FileNotFoundError("uv non trovato nel PATH.")
-    if provider_json is not None:
-        provider = _provider(_jsonc(Path(provider_json).expanduser().read_text(encoding="utf-8")), p.settings.model)
-    elif p.settings.provider:
-        provider = _provider(p.settings.provider, p.settings.model)
-    else:
-        config = Path.home() / ".config/opencode/opencode.jsonc"
-        if not config.is_file():
-            raise FileNotFoundError("Provider non trovato: passa --provider-json <file>.")
-        provider = _provider(_jsonc(config.read_text(encoding="utf-8")), p.settings.model)
-
-    if not live_config.is_file():
-        raise FileNotFoundError("config.json non trovato nel repository.")
-    config = _read_object(live_config)
-    if p.name == "dev":
-        recap_recipient = dev_recipient
-    else:
-        from assistant.recap import recap_recipient as resolve_recipient
-
-        stored = p.settings.recap_recipient
-        recipients = config.get("digest_recipients")
-        if (recap_recipient is None and stored and isinstance(recipients, list)
-                and any(isinstance(value, str) and value.casefold() == stored.casefold()
-                        for value in recipients)):
-            recap_recipient = stored
-        candidate = replace(p, settings=replace(
-            p.settings, dwt_config=live_config, recap_recipient=recap_recipient,
-        ))
+    # Keep workers out until all installation work (including bootstrap) finishes.
+    with (p.root / "improve.lock").open("a", encoding="utf-8") as improve_lock:
         try:
-            recap_recipient = resolve_recipient(candidate)
-        except ValueError:
-            raise ValueError("Passa --recap-recipient con un indirizzo presente in digest_recipients.") from None
-    live_db = live_state / "dwt.db"
-    dev_dir = p.root / "dwt"
-    if p.name == "dev":
-        if not live_db.is_file():
-            raise FileNotFoundError("Il database dwt.db da copiare non esiste.")
-        dev_db = dev_dir / "dwt.db"
-        if (dev_dir.is_symlink() or dev_db.is_symlink()
-                or (dev_db.exists() and dev_db.samefile(live_db))):
-            raise ValueError("La copia dev deve essere separata dal database live.")
-        if not (repo / "taxonomy.json").is_file():
-            raise FileNotFoundError("taxonomy.json non trovato nel repository.")
+            fcntl.flock(improve_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RuntimeError("Attendi la fine del miglioramento prima di aggiornarlo.") from None
+        if p.name == "dev" and not _valid_email(dev_recipient):
+            raise ValueError("Il profilo dev richiede --dev-recipient con un indirizzo email valido.")
+        key = os.environ.get("AZURE_API_KEY", "")
+        if not key.strip() or "\n" in key or "\r" in key:
+            raise ValueError("Imposta AZURE_API_KEY nell'ambiente prima dell'installazione (una sola riga).")
+        dwt = repo / "bin/dwt"
+        if not dwt.is_file():
+            raise FileNotFoundError("bin/dwt non trovato: esegui make build nel repository.")
+        opencode = shutil.which("opencode")
+        if not opencode:
+            raise FileNotFoundError("opencode non trovato nel PATH.")
+        uv = shutil.which("uv")
+        if not uv:
+            raise FileNotFoundError("uv non trovato nel PATH.")
+        if provider_json is not None:
+            provider = _provider(_jsonc(Path(provider_json).expanduser().read_text(encoding="utf-8")), p.settings.model)
+        elif p.settings.provider:
+            provider = _provider(p.settings.provider, p.settings.model)
+        else:
+            config = Path.home() / ".config/opencode/opencode.jsonc"
+            if not config.is_file():
+                raise FileNotFoundError("Provider non trovato: passa --provider-json <file>.")
+            provider = _provider(_jsonc(config.read_text(encoding="utf-8")), p.settings.model)
 
-    settings = replace(
-        p.settings, opencode_bin=str(Path(opencode).absolute()), dwt_bin=str(dwt),
-        dwt_config=dev_dir / "config.json" if p.name == "dev" else live_config,
-        dwt_env=repo / ".env", secrets_env=p.root / "secrets.env", provider=provider,
-        recap_recipient=recap_recipient,
-        dwt_state_dir=str(dev_dir if p.name == "dev" else live_state),
-    )
-    p = replace(p, settings=settings)
-    warn_opencode_version(settings.opencode_bin)
-    subprocess.run([uv, "venv", "--python", "3.13", str(p.root / "venv")], check=True)
-    subprocess.run([
-        uv, "pip", "install", "--python", str(p.root / "venv/bin/python"), str(repo / "assistant"),
-    ], check=True)
-    _atomic_write(p.root / "settings.json", json.dumps(asdict(settings), default=str, indent=2) + "\n")
-    _atomic_write(settings.secrets_env, f"AZURE_API_KEY={key}\n")
-    harness = p.root / "harness-live"
-    from assistant.bench.improve import fingerprint, record_promoted_install
+        if not live_config.is_file():
+            raise FileNotFoundError("config.json non trovato nel repository.")
+        config = _read_object(live_config)
+        if p.name == "dev":
+            recap_recipient = dev_recipient
+        else:
+            from assistant.recap import recap_recipient as resolve_recipient
 
-    tree = load_tree(repo / "assistant/harness")
-    validate_tree(tree)
-    previous_harness = fingerprint(harness) if harness.is_dir() else None
-    if harness.exists():
-        shutil.rmtree(harness)
-    harness.mkdir(mode=0o700, parents=True)
-    for name, text in tree.items():
-        _atomic_write(harness / name, text)
-    if p.name == "dev":
-        dev_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        _backup(live_db, dev_dir / "dwt.db")
-        config.update(state_dir=str(dev_dir), digest_recipients=[dev_recipient], alert_recipients=[dev_recipient])
-        _atomic_write(settings.dwt_config, json.dumps(config, indent=2) + "\n")
-        _atomic_write(dev_dir / "taxonomy.json", (repo / "taxonomy.json").read_text(encoding="utf-8"))
-    render_workspace(p, harness)
-    record_promoted_install(p, previous_harness, now)
-    script = launcher_script(p)
-    _atomic_write(p.root / "Assistente.command", script, 0o755)
-    if desktop_launcher:
-        _atomic_write(Path.home() / "Desktop/Assistente.command", script, 0o755)
-    markers = load_markers(p)
-    if markers.installed_at is None:
-        markers.installed_at = now
-        save_markers(p, markers)
-    if not no_launchd:
-        p.logs_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-        plist = _plist_path(p)
-        _atomic_write(plist, launchd_plist(p))
-        _bootout(p)
-        subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist)], check=True)
-    return p
+            stored = p.settings.recap_recipient
+            recipients = config.get("digest_recipients")
+            if (recap_recipient is None and stored and isinstance(recipients, list)
+                    and any(isinstance(value, str) and value.casefold() == stored.casefold()
+                            for value in recipients)):
+                recap_recipient = stored
+            candidate = replace(p, settings=replace(
+                p.settings, dwt_config=live_config, recap_recipient=recap_recipient,
+            ))
+            try:
+                recap_recipient = resolve_recipient(candidate)
+            except ValueError:
+                raise ValueError("Passa --recap-recipient con un indirizzo presente in digest_recipients.") from None
+        live_db = live_state / "dwt.db"
+        dev_dir = p.root / "dwt"
+        if p.name == "dev":
+            if not live_db.is_file():
+                raise FileNotFoundError("Il database dwt.db da copiare non esiste.")
+            dev_db = dev_dir / "dwt.db"
+            if (dev_dir.is_symlink() or dev_db.is_symlink()
+                    or (dev_db.exists() and dev_db.samefile(live_db))):
+                raise ValueError("La copia dev deve essere separata dal database live.")
+            if not (repo / "taxonomy.json").is_file():
+                raise FileNotFoundError("taxonomy.json non trovato nel repository.")
+
+        settings = replace(
+            p.settings, opencode_bin=str(Path(opencode).absolute()), dwt_bin=str(dwt),
+            dwt_config=dev_dir / "config.json" if p.name == "dev" else live_config,
+            dwt_env=repo / ".env", secrets_env=p.root / "secrets.env", provider=provider,
+            recap_recipient=recap_recipient,
+            dwt_state_dir=str(dev_dir if p.name == "dev" else live_state),
+        )
+        p = replace(p, settings=settings)
+        warn_opencode_version(settings.opencode_bin)
+        # Drain the current tick and unload its job before replacing its interpreter.
+        with (p.root / "tick.lock").open("a", encoding="utf-8") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            try:
+                _bootout(p)
+            finally:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+        subprocess.run([uv, "venv", "--clear", "--python", "3.13", str(p.root / "venv")], check=True)
+        subprocess.run([
+            uv, "pip", "install", "--python", str(p.root / "venv/bin/python"), str(repo / "assistant"),
+        ], check=True)
+        _atomic_write(p.root / "settings.json", json.dumps(asdict(settings), default=str, indent=2) + "\n")
+        _atomic_write(settings.secrets_env, f"AZURE_API_KEY={key}\n")
+        harness = p.root / "harness-live"
+        from assistant.bench.improve import fingerprint, record_promoted_install
+
+        tree = load_tree(repo / "assistant/harness")
+        validate_tree(tree)
+        previous_harness = fingerprint(harness) if harness.is_dir() else None
+        if harness.exists():
+            shutil.rmtree(harness)
+        harness.mkdir(mode=0o700, parents=True)
+        for name, text in tree.items():
+            _atomic_write(harness / name, text)
+        if p.name == "dev":
+            dev_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            _backup(live_db, dev_dir / "dwt.db")
+            config.update(state_dir=str(dev_dir), digest_recipients=[dev_recipient], alert_recipients=[dev_recipient])
+            _atomic_write(settings.dwt_config, json.dumps(config, indent=2) + "\n")
+            _atomic_write(dev_dir / "taxonomy.json", (repo / "taxonomy.json").read_text(encoding="utf-8"))
+        render_workspace(p, harness)
+        record_promoted_install(p, previous_harness, now)
+        script = launcher_script(p)
+        _atomic_write(p.root / "Assistente.command", script, 0o755)
+        if desktop_launcher:
+            _atomic_write(Path.home() / "Desktop/Assistente.command", script, 0o755)
+        markers = load_markers(p)
+        if markers.installed_at is None:
+            markers.installed_at = now
+            save_markers(p, markers)
+        if not no_launchd:
+            p.logs_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+            plist = _plist_path(p)
+            _atomic_write(plist, launchd_plist(p))
+            subprocess.run(["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist)], check=True)
+        return p
 
 
 def uninstall(profile: str, *, state_root: Path | None = None, purge: bool = False) -> None:
