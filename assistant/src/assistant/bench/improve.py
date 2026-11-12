@@ -244,7 +244,11 @@ def run_improvement(p: Profile, now: datetime, *, max_batch: int = 25, max_regre
         splits = assign_splits(p, [*real, *seeds])
         used = {identifier for path in (p.bench_dir / "runs").glob("*/run.json")
                 for identifier in _read_object(path)["batch_ids"]}
-        batch = select_batch([turn for turn in (real or seeds) if turn.turn_id not in used], splits)[:max_batch]
+        batch = select_batch([turn for turn in real if turn.turn_id not in used], splits)[:max_batch]
+        if not batch:
+            batch = sorted((turn for turn in seeds
+                            if splits[turn.turn_id] == "train" and turn.turn_id not in used),
+                           key=lambda turn: turn.turn_id)[:max_batch]
         regression = _regression(p, real, seeds, splits)[:max_regression]
         run_id = now.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         directory = _run_dir(p, run_id)

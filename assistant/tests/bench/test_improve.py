@@ -140,6 +140,43 @@ def test_no_real_turns_uses_seed_train_and_holdout(rig):
     assert kwargs["adapter"].seed_snapshot == rig.seed_db
 
 
+@pytest.mark.parametrize("real_state", ["none", "holdout", "used"])
+@pytest.mark.parametrize("max_batch", [3, 25])
+def test_empty_real_train_falls_back_to_unused_seed_train(rig, real_state, max_batch):
+    rig.seeds[:4] = reversed(rig.seeds[:4])
+    if real_state != "none":
+        rig.real.append(turn("real"))
+        split = "holdout" if real_state == "holdout" else "train"
+        (rig.p.bench_dir / "splits.json").write_text(json.dumps({"real": split}))
+    if real_state == "used":
+        previous = rig.p.bench_dir / "runs/previous"
+        previous.mkdir(parents=True)
+        (previous / "run.json").write_text(json.dumps({"batch_ids": ["real", "seed-0"]}))
+
+    directory = improve.run_improvement(rig.p, NOW, max_batch=max_batch)
+    state = read(directory / "run.json")
+    expected = ["seed-1", "seed-2", "seed-3"] if real_state == "used" else ["seed-0", "seed-1", "seed-2", "seed-3"]
+    assert state["batch_ids"] == expected[:max_batch]
+    assert state["regression_ids"] == ["seed-4", "seed-5", "seed-6", "seed-7"] + (
+        ["real"] if real_state == "holdout" else [])
+    assert (directory / "GATE").read_text().strip() == "passed"
+    assert "Nessun nuovo turno" not in (directory / "report.md").read_text()
+
+
+def test_seed_train_used_once_then_exhausted(rig):
+    rig.seeds[:4] = reversed(rig.seeds[:4])
+    first = improve.run_improvement(rig.p, NOW, max_batch=3)
+    second = improve.run_improvement(rig.p, NOW + timedelta(days=1), max_batch=3)
+    exhausted = improve.run_improvement(rig.p, NOW + timedelta(days=2), max_batch=3)
+
+    assert read(first / "run.json")["batch_ids"] == ["seed-0", "seed-1", "seed-2"]
+    assert read(second / "run.json")["batch_ids"] == ["seed-3"]
+    assert read(exhausted / "run.json")["batch_ids"] == []
+    assert len(rig.calls) == 2
+    assert (exhausted / "GATE").read_text().strip() == "failed"
+    assert "Nessun nuovo turno di training disponibile" in (exhausted / "report.md").read_text()
+
+
 def test_regression_set_capped_at_60_keeps_seed_holdout(rig):
     rig.real.extend(turn(str(i), at=NOW + timedelta(seconds=i)) for i in range(100))
     (rig.p.bench_dir / "splits.json").write_text(json.dumps(dict.fromkeys([t.turn_id for t in rig.real], "holdout")))
@@ -188,10 +225,12 @@ def test_training_exposure_never_reused(rig):
     (rig.p.bench_dir / "splits.json").write_text(json.dumps(dict.fromkeys([t.turn_id for t in rig.real], "train")))
     first = improve.run_improvement(rig.p, NOW)
     second = improve.run_improvement(rig.p, NOW + timedelta(days=1))
+    exhausted = improve.run_improvement(rig.p, NOW + timedelta(days=2))
     assert read(first / "run.json")["batch_ids"] == [str(i) for i in range(5)]
-    assert not read(second / "run.json")["batch_ids"]
-    assert len(rig.calls) == 1
-    assert (second / "GATE").read_text().strip() == "failed"
+    assert read(second / "run.json")["batch_ids"] == ["seed-0", "seed-1", "seed-2", "seed-3"]
+    assert not read(exhausted / "run.json")["batch_ids"]
+    assert len(rig.calls) == 2
+    assert (exhausted / "GATE").read_text().strip() == "failed"
 
 
 @pytest.mark.parametrize("problem", ["missing_selection", "invalid_tree", "incomplete", "changed_live"])

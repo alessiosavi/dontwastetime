@@ -17,6 +17,7 @@ def test_improvement_end_to_end_small():
     # under an empty cwd for unit tests, whereas a worker captures its own root.
     result = subprocess.run([sys.executable, "-c", '''
 from datetime import datetime, timezone
+import json
 import os
 from pathlib import Path
 import sys
@@ -38,8 +39,20 @@ with (p.root / "improve.lock").open("a") as lock:
 assert (directory / "run.json").is_file()
 assert (directory / "report.md").is_file()
 assert (directory / "candidate").is_dir()
-assert (directory / "GATE").read_text().strip() in ("passed", "failed")
+state = json.loads((directory / "run.json").read_text())
+report = (directory / "report.md").read_text()
+gate = (directory / "GATE").read_text().strip()
 print(directory)
+print("GATE=" + gate)
+for line in report.splitlines():
+    if line.startswith("Media "):
+        print(line)
+assert gate in ("passed", "failed")
+assert state["batch_ids"], "The improvement run must train on a non-empty batch"
+assert "Nessun nuovo turno" not in report
+assert any(path.is_dir() and (path / "harnesses").is_dir()
+           for path in (root / "runs").rglob(state["batch_id"])), "Harness² task directory missing"
 ''', STATE_ROOT], env=dict(os.environ, PATH=REAL_PATH), capture_output=True, text=True, timeout=14400)
+    print(result.stdout, end="")
     assert result.returncode == 0, result.stderr[-4000:]
     assert result.stdout.strip()
