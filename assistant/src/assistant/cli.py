@@ -49,7 +49,9 @@ def main(argv=None) -> int:
     recapping.add_argument("--dry-run", action="store_true", help="scrivi i file senza inviare")
     tone_card = commands.add_parser("tone-card", help="prepara una bozza della scheda di tono (solo dev)")
     bench = commands.add_parser("bench", help="valuta l'assistente sulla copia della posta")
-    bench.add_subparsers(dest="bench_command")
+    bench_commands = bench.add_subparsers(dest="bench_command")
+    improving = bench_commands.add_parser("improve-worker", help="avvia il processo privato di miglioramento")
+    _common(improving, suppress_defaults=True)
     for subcommand in (
         installing, removing, launching, notes, ticking, exporting, snapshotting, recapping, tone_card, bench,
     ):
@@ -57,6 +59,10 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == "bench":
+            if args.bench_command == "improve-worker":
+                from assistant.bench.worker import improve_worker_main
+
+                return improve_worker_main(args.profile, args.state_root)
             bench.print_help()
             return 0
         if args.command == "install":
