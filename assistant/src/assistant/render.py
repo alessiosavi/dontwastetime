@@ -50,7 +50,8 @@ def _local_server(command: list[str]) -> dict:
     return {"type": "local", "command": command, "codemode": False, "protocol": "legacy"}
 
 
-def _dwt_server(p: Profile, state_dir: Path | None = None, now: datetime | None = None) -> dict:
+def dwt_command(p: Profile, state_dir: Path | None = None, now: datetime | None = None) -> list[str]:
+    """One argv for rendered MCP servers and the synchronous Python client."""
     if now is not None and now.utcoffset() is None:
         raise ValueError("now must be timezone-aware for dwt's RFC3339 clock")
     command = [
@@ -60,7 +61,7 @@ def _dwt_server(p: Profile, state_dir: Path | None = None, now: datetime | None 
     ]
     if now is not None:
         command += ["--now", now.isoformat()]
-    return _local_server(command)
+    return command
 
 
 def opencode_config(
@@ -76,7 +77,7 @@ def opencode_config(
     return {
         **_base_config(p),
         "mcp": {"servers": {
-            "dwt": _dwt_server(p, dwt_state_dir, now),
+            "dwt": _local_server(dwt_command(p, dwt_state_dir, now)),
             "notes": _local_server([
                 sys.executable, "-m", "assistant", "notes-mcp", "--memory-dir", str(memory),
             ]),
@@ -215,7 +216,7 @@ def ops_workspace(p: Profile, *, dwt_read_tools: bool) -> Path:
     config = {
         **_base_config(p),
         "permissions": _permissions(*(_DWT_READ_TOOLS if dwt_read_tools else ())),
-        "mcp": {"servers": {"dwt": _dwt_server(p)} if dwt_read_tools else {}},
+        "mcp": {"servers": {"dwt": _local_server(dwt_command(p))} if dwt_read_tools else {}},
     }
     config_text = json.dumps(config, ensure_ascii=False, indent=2) + "\n"
     root = p.root / "ops-workspaces"

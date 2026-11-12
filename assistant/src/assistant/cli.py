@@ -1,6 +1,7 @@
 """Command line entry point for profile installation and interactive use."""
 
 import argparse
+from datetime import datetime, timezone
 from pathlib import Path
 import sqlite3
 import subprocess
@@ -8,6 +9,7 @@ import sys
 
 from assistant.install import install, uninstall
 from assistant.launch import launch
+from assistant.profile import load_profile
 
 
 def _common(parser: argparse.ArgumentParser, *, suppress_defaults: bool = False) -> None:
@@ -38,7 +40,9 @@ def main(argv=None) -> int:
     notes = commands.add_parser("notes-mcp", help="avvia il server MCP delle note")
     notes.add_argument("--memory-dir", type=Path, required=True)
     ticking = commands.add_parser("tick", help="job periodico (non ancora disponibile)")
-    for subcommand in (installing, removing, launching, notes, ticking):
+    exporting = commands.add_parser("export", help="esporta le conversazioni nuove o aggiornate")
+    snapshotting = commands.add_parser("snapshot", help="salva una copia dello stato dwt")
+    for subcommand in (installing, removing, launching, notes, ticking, exporting, snapshotting):
         _common(subcommand, suppress_defaults=True)
     args = parser.parse_args(argv)
     try:
@@ -59,6 +63,16 @@ def main(argv=None) -> int:
         elif args.command == "tick":
             print("tick non ancora disponibile", file=sys.stderr)
             return 1
+        elif args.command == "export":
+            from assistant.sessions import export_new_sessions
+
+            paths = export_new_sessions(load_profile(args.profile, args.state_root))
+            print(f"Conversazioni esportate: {len(paths)}.")
+        elif args.command == "snapshot":
+            from assistant.snapshot import take_snapshot
+
+            path = take_snapshot(load_profile(args.profile, args.state_root), datetime.now(timezone.utc))
+            print(f"Copia dello stato: {path}")
     except (OSError, ValueError, RuntimeError, sqlite3.Error) as error:
         print(f"Assistente: {error}", file=sys.stderr)
         return 1
