@@ -1,14 +1,23 @@
 # secrets and local config — never committed
-.env
-config.json
-config.json.bak
+/.env
+/.env.*
+!/.env.example
+/config.json
+/config.json.*
+!/config.example.json
+/opencode.json
+
 # local state / build output
 bin/
 *.db
 *.db-wal
 *.db-shm
+
 # agent workspaces
 .worktrees/
+/.serena/
+/.superpowers/
+
 # Python assistant
 assistant/.venv/
 __pycache__/
