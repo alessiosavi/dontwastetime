@@ -1,6 +1,6 @@
 # DontWasteTime (`dwt`)
 
-Local email triage for the Example Microsoft 365 mailboxes. `dwt` reads every
+Local email triage for Microsoft 365 mailboxes. `dwt` reads every
 enabled mailbox via Microsoft Graph, classifies each mail into the cassetti
 taxonomy (`taxonomy.json`), tracks threads that need a reply, and emails a
 digest every working day at 08:00 Europe/Rome plus an immediate alert for P0
@@ -49,7 +49,7 @@ State lives in `~/Library/Application Support/dontwastetime/` (override with
 ## Setup checklist
 
 1. **Credentials**: `cp .env.example .env` and copy `MS_TENANT_ID`,
-   `MS_CLIENT_ID` and `MS_CLIENT_SECRET` by hand from internal's local `.env`. Never
+   `MS_CLIENT_ID` and `MS_CLIENT_SECRET` from your secret store. Never
    commit `.env` (it is gitignored) and never paste its values anywhere else.
 2. **Classifier**: set `LLM_URL`, `LLM_MODEL` and `LLM_API_KEY` for the Azure AI
    Foundry deployment (EU hosting). `LLM_URL` is the OpenAI-compatible base:
@@ -57,7 +57,7 @@ State lives in `~/Library/Application Support/dontwastetime/` (override with
 3. **Config**: `cp config.example.json config.json`, then set:
    - `mailboxes`: every mailbox to follow. `digest:false` keeps a box classified
      for coverage but out of the digest and alerts (employee personal boxes).
-   - `digest_recipients`: configured recipients for the digest and alerts (today Operator).
+   - `digest_recipients`: configured recipients for the digest and alerts (e.g. the founder).
      `alert_recipients` defaults to the same list.
    - `top_clients`: the 10–20 preferred client domains that can trigger P0 alerts.
      Earlier outbound mail in To or Cc also makes a sender a known client: exact
@@ -75,7 +75,7 @@ State lives in `~/Library/Application Support/dontwastetime/` (override with
 ./bin/dwt sync --mailbox marketing@example.com       # first small real sync
 ./bin/dwt explore --days 90 --mailboxes marketing@example.com,tech@example.com,business@example.com
 #   read the reports in <state>/reports/, then admin@ and the personal boxes;
-#   Operator + founder sign the cluster table (approve / rename / reject)
+#   the operators sign the cluster table (approve / rename / reject)
 ./bin/dwt digest --date today --dry-run            # review <state>/digests/<day>.md
 ./bin/dwt serve --dry-run                          # full loop, nothing sent
 make install                                       # launchd agent (KeepAlive)
@@ -199,7 +199,7 @@ agent provider's session.
 Bodies are stored locally in SQLite; classification sends an excerpt of at most
 1,000 characters to the configured LLM endpoint (EU hosting). Content returned
 to an agent enters that agent provider's session, including personal mail when
-requested. Digest and alerts: configured recipients (today Operator).
+requested. Digest and alerts: configured recipients (e.g. the founder).
 Credentials are env-only and never logged.
 
 ## Development
