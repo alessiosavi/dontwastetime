@@ -9,7 +9,7 @@ Posta arrivata da lun 9 nov 08:00 a mar 10 nov 08:00 sulle caselle seguite.
 - [P0 · Clienti] cto@bigbrand.example — "Problema bloccante in produzione" — in attesa da 30 minuti — tech@example.com — #48
 - [P1 · Clienti] admin@foo.example — "Domanda su fattura" — in attesa da 48 ore (oltre le 24h) — business@example.com — #4
 - [Amministrazione · Richieste] bandi@partner.example — "Richiesta dati aziendali per bando" — in attesa da 50 ore (oltre le 48h) — business@example.com — #2
-- [Ops · Office] manager@office.example — "Disponibilità sala riunioni" — in attesa da 49 ore (oltre le 48h) — business@example.com — #3
+- [Ops · Spaces] manager@office.example — "Disponibilità sala riunioni" — in attesa da 49 ore (oltre le 48h) — business@example.com — #3
 - [Business · Sviluppo] partner@fund.example — "Incontro investitori" — in attesa da 40 ore (oltre le 24h) — business@example.com — #5
 
 ## Per cassetto
@@ -49,7 +49,7 @@ Posta arrivata da lun 9 nov 08:00 a mar 10 nov 08:00 sulle caselle seguite.
 
 - noreply@expenseprovider.example — "Nota spese da approvare" — 20 ore fa — business@example.com — #17
 
-### Ops · Office (1)
+### Ops · Spaces (1)
 
 - manager@office.example — "Disponibilità sala riunioni" — 49 ore fa — business@example.com — #3
 

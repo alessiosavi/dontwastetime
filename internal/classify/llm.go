@@ -274,7 +274,7 @@ func parseAnswers(s string) ([]answer, error) {
 
 func systemPrompt(t *Taxonomy, examples []store.Correction) string {
 	var b strings.Builder
-	b.WriteString("You classify business emails of an Italian company (Example) into exactly one label (\"cassetto\") each.\n")
+	b.WriteString("You classify business emails of an Italian company into exactly one label (\"cassetto\") each.\n")
 	b.WriteString("bulk: true means the mail was sent in bulk (unsubscribe header). Newsletters and promotions are marketing.news, but receipts, payment notices, product or system reports and alerts sent in bulk keep their own label (admin.invoices, notifications, tech.alerts).\n")
 	b.WriteString("reply_expected: true only if someone at the company is expected to answer this message by email (a real person asking us something or waiting for a response or action); false for automated mail, newsletters, receipts, FYI or cc-only mail, confirmations, and messages that close a conversation.\n")
 	b.WriteString("Labels:\n")

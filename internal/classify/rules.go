@@ -40,7 +40,7 @@ var (
 	notificationDomains = []string{"cal.com", "cal.eu", "calendly.com", "tito.io", "eventbrite.com", "eventbrite.it", "trenitalia.it"}
 	entitySRL           = regexp.MustCompile(`(?i)example[\W_]*s\.?\s?r\.?\s?l`)
 	entityLTD           = regexp.MustCompile(`(?i)example[\W_]*(ltd|limited)`)
-	entityBranch       = regexp.MustCompile(`(?i)branch[\W_]*one`)
+	entityBranch        = regexp.MustCompile(`(?i)branch`)
 )
 
 // norm is the match form of a subject: lower-case letters/digits/spaces,
