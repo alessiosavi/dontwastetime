@@ -55,7 +55,7 @@ def test_execute_turns_passes_now(profile, bench_turn, bench_snapshot, tmp_path,
     assert command[command.index("--state-dir") + 1] == str(result.run_dir / "dwt")
     invocation = json.loads(log.read_text())
     assert invocation["argv"][-2:] == ["--", "Conversazione precedente:\nOperator: ciao\n"
-                                      "Assistente: Buongiorno\n\nMessaggio di Operator:\ncosa devo fare oggi?"]
+                                      "Assistente: Buongiorno\n\nMessaggio dell'operatore:\ncosa devo fare oggi?"]
     assert "--variant" not in invocation["argv"] and "--dir" not in invocation["argv"]
 
 

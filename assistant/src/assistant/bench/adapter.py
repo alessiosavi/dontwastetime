@@ -55,7 +55,7 @@ class OperatorAdapter:
         return BenchSpec(
             name="operator", runs_root=self.p.bench_dir / "h2/runs",
             install_mode="workspace_agents_md", allow_subagents=False,
-            prompts=BenchPrompts(work="rispondere a Operator in italiano usando dwt\n\n" + _EDITABLE_HARNESS,
+            prompts=BenchPrompts(work="rispondere all'operatore in italiano usando dwt\n\n" + _EDITABLE_HARNESS,
                                 domain_word="assistente", deliverable_word="risposte"),
             channels={"proposer": channel, "selector": channel},
         )

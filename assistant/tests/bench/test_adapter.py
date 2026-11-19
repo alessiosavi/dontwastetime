@@ -31,14 +31,14 @@ def test_adapter_satisfies_protocol(profile, bench_turn):
     assert adapter.spec.name == "operator"
     assert adapter.spec.install_mode == "workspace_agents_md"
     assert not adapter.spec.allow_subagents
-    assert "rispondere a Operator in italiano usando dwt" in adapter.spec.prompts.work
+    assert "rispondere all'operatore in italiano usando dwt" in adapter.spec.prompts.work
     assert adapter.spec.channels["proposer"].model == profile.settings.model
     assert adapter.spec.channels["proposer"].timeout == 1800
     assert adapter.substrate.name == "oc"
     assert adapter.tasks() == adapter.tasks("train") == ["batch-15"]
     assert adapter.domain_of("batch-15") == "operator"
     assert adapter.base_harness() == profile.root / "harness-live"
-    assert "Messaggio di Operator:\ncosa devo fare oggi?" in adapter.task_prompt("batch-15")
+    assert "Messaggio dell'operatore:\ncosa devo fare oggi?" in adapter.task_prompt("batch-15")
     assert "Operator: ciao" in adapter.task_prompt("batch-15")
 
 

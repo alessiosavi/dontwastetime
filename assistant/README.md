@@ -1,4 +1,4 @@
-# Operator's assistant
+# Operator assistant
 
 The Python runtime installs an isolated OpenCode assistant over dwt. Use Python
 3.13, `uv`, and the supported OpenCode binary on macOS. Build dwt with `make build`
@@ -12,13 +12,13 @@ export AZURE_API_KEY='…'
 make assistant-install PROFILE=dev DEV_RECIPIENT=dev@example.com
 ```
 
-Once verified, install Operator's profile:
+Once verified, install the operator profile:
 
 ```sh
 make assistant-install PROFILE=operator
 ```
 
-For Operator, install defaults `recap_recipient` to the live config's sole
+For the operator, install defaults `recap_recipient` to the live config's sole
 `digest_recipients` entry. If there are multiple entries, choose explicitly:
 
 ```sh
@@ -96,7 +96,7 @@ make assistant-uninstall PROFILE=dev PURGE=1  # delete profile state too
 Uninstall removes the assistant job and its launcher (including an identical
 Desktop copy). dwt's job and live database/config remain in place.
 
-To move to Operator's Mac, copy the repository, configure dwt there, build it,
+To move to the operator's Mac, copy the repository, configure dwt there, build it,
 then run install there with `AZURE_API_KEY` in the environment and
 `--provider-json` pointing at a secret-free provider file. Install generates that
 Mac's paths and venv; do not transplant the development venv or sessions.

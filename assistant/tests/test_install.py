@@ -787,13 +787,13 @@ def test_install_version_warning_is_nonfatal_on_stderr(installation, version, wa
 def test_operator_install_accepts_explicit_digest_recipient_case_insensitively(installation):
     config = {**installation["config"], "digest_recipients": ["operator@example.com", "other@example.com"]}
     (installation["repo"] / "config.json").write_text(json.dumps(config))
-    p = do_install(installation, "operator", recap_recipient="person.two@example.com", no_launchd=True)
-    assert p.settings.recap_recipient == "person.two@example.com"
+    p = do_install(installation, "operator", recap_recipient="OPERATOR@example.com", no_launchd=True)
+    assert p.settings.recap_recipient == "OPERATOR@example.com"
 
 
 @pytest.mark.parametrize("recipients, explicit, expected", [
     (["operator@example.com", "other@example.com"], None, "operator@example.com"),
-    (["person.two@example.com", "other@example.com"], None, "operator@example.com"),
+    (["OPERATOR@example.com", "other@example.com"], None, "operator@example.com"),
     (["new@example.com"], None, "new@example.com"),
     (["new@example.com", "other@example.com"], None, None),
     (["operator@example.com", "other@example.com"], "other@example.com", "other@example.com"),

@@ -22,7 +22,7 @@ def freeze_evidence(p: Profile, turns: list[Turn], path: Path) -> dict[str, str]
         return require_evidence(turns, json.loads(path.read_text(encoding="utf-8")))
     snapshots = _snapshots(p)
     if not snapshots:
-        raise ValueError("Nessuna snapshot disponibile per le reazioni di Operator.")
+        raise ValueError("Nessuna snapshot disponibile per le reazioni dell'operatore.")
     latest = snapshots[-1][1]
     evidence = {turn.turn_id: judge.evidence_for(turn, latest=latest)
                 for turn in {turn.turn_id: turn for turn in turns}.values()}

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "operator-assistant"
 version = "0.1.0"
-description = "Operator's assistant over dontwastetime"
+description = "Operator assistant over dontwastetime"
 requires-python = ">=3.12,<3.14"
 dependencies = [
     "mcp>=1.30,<1.31",

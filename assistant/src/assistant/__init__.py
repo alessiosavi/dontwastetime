@@ -1,1 +1,1 @@
-"""Operator's assistant runtime."""
+"""Operator assistant runtime."""

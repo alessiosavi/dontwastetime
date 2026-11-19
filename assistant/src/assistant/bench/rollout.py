@@ -31,7 +31,7 @@ def transcript(turn: Turn) -> str:
     history = "\n".join(f"{'Operator' if role == 'user' else 'Assistente'}: {text}"
                         for role, text in turn.history)
     return (("Conversazione precedente:\n" + history + "\n\n") if history else "") + (
-        "Messaggio di Operator:\n" + turn.message)
+        "Messaggio dell'operatore:\n" + turn.message)
 
 
 def run_events(stdout: str | bytes | None, *, session_ids: set[str] | None = None

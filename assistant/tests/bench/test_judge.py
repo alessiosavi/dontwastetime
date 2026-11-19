@@ -215,13 +215,13 @@ def test_evidence_uses_latest_snapshot_for_sent_reply(profile, bench_turn, bench
                     {"id": 23, "thread": "wanted", "direction": "out", "received_at": "2026-11-12T11:00:00Z"}],
                         "meta": {"next_cursor": "page2"}}
             assert (tool, args) == ("get_message", {"id": 21})
-            return {"id": 21, "thread": "wanted", "direction": "out", "untrusted": {"body": "Risposta di Operator " * 150}}
+            return {"id": 21, "thread": "wanted", "direction": "out", "untrusted": {"body": "Risposta dell'operatore " * 150}}
 
     monkeypatch.setattr(judge, "DwtClient", Client)
     text = judge.evidence_for(turn, latest=bench_snapshot)
     assert "grazie" in text and "relabel" in text and "12" in text
-    assert "Risposta di Operator" in text and len(text) <= 4000
-    assert text.count("Risposta di Operator") < 85
+    assert "Risposta dell'operatore" in text and len(text) <= 4000
+    assert text.count("Risposta dell'operatore") < 85
     assert all(not state.exists() for state in states)
     assert before == (bench_snapshot.read_bytes(), bench_snapshot.stat().st_mtime_ns)
 

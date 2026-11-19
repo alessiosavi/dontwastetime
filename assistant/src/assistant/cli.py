@@ -71,7 +71,7 @@ def _bench_seed(args) -> int:
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(prog="assistant", description="L'assistente privato di Operator.")
+    parser = argparse.ArgumentParser(prog="assistant", description="L'assistente privato dell'operatore.")
     _common(parser)
     commands = parser.add_subparsers(dest="command", required=True)
     installing = commands.add_parser("install", help="installa un profilo")

@@ -243,7 +243,7 @@ def _summary(before: dict[str, str], after: dict[str, str]) -> str:
     changed = set(diff["added"] + diff["modified"] + diff["removed"])
     parts = [label for path, label in labels.items() if path in changed]
     if any(path.startswith("skills/") for path in changed):
-        parts.append("procedure per le richieste di Operator")
+        parts.append("procedure per le richieste dell'operatore")
     return "ho aggiornato " + ", ".join(parts) + "." if parts else "Nessuna modifica al testo."
 
 

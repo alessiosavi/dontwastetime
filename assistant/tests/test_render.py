@@ -188,7 +188,7 @@ def test_rerender_keeps_memory(profile):
     workspace = render_workspace(profile, HARNESS_ROOT)
     notes = workspace / "memory/notes.jsonl"
     notes.write_text('{"text":"da conservare"}\n')
-    (workspace / "memory/notes.md").write_text("Una nota di Operator.\n")
+    (workspace / "memory/notes.md").write_text("Una nota dell'operatore.\n")
     for stale in ("obsolete.txt", ".opencode/plugin/stale.ts", "scripts/stale.py"):
         path = workspace / stale
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -199,7 +199,7 @@ def test_rerender_keeps_memory(profile):
     assert (workspace / "memory").is_symlink()
     assert (workspace / "memory").resolve() == profile.memory_dir
     assert notes.read_text() == '{"text":"da conservare"}\n'
-    assert (workspace / "memory/notes.md").read_text() == "Una nota di Operator.\n"
+    assert (workspace / "memory/notes.md").read_text() == "Una nota dell'operatore.\n"
     assert not (workspace / "obsolete.txt").exists()
     assert not (workspace / ".opencode/plugin").exists()
     assert not (workspace / "scripts").exists()
